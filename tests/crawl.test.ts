@@ -18,11 +18,13 @@ afterEach(async () => {
 
 describe('CrawlService', () => {
   it('uses Chromium and respects robots.txt', async () => {
+    let privateRequests = 0;
     fixture = http.createServer((request, response) => {
       if (request.url === '/robots.txt') return void response.end('User-agent: *\nDisallow: /private\n');
       response.setHeader('content-type', 'text/html');
       if (request.url === '/') return void response.end('<title>Root</title><main><h1>Root</h1><a href="/page">Page</a><a href="/private">Private</a></main>');
       if (request.url === '/page') return void response.end('<title>Page</title><main><h1>Allowed page</h1></main>');
+      if (request.url === '/private') privateRequests += 1;
       response.end('<title>Private</title><main>Should not be crawled</main>');
     });
     await new Promise<void>((resolve) => fixture!.listen(0, '127.0.0.1', () => resolve()));
@@ -41,6 +43,8 @@ describe('CrawlService', () => {
     }
     expect(current.status).toBe('completed');
     expect(current.results.find((item) => item.url.endsWith('/page'))?.markdown).toContain('Allowed page');
-    expect(current.results.find((item) => item.url.endsWith('/private'))?.error).toBe('Blocked by robots.txt');
+    const privateResult = current.results.find((item) => item.url.endsWith('/private'));
+    if (privateResult) expect(privateResult.error).toBe('Blocked by robots.txt');
+    expect(privateRequests).toBe(0);
   });
 });
