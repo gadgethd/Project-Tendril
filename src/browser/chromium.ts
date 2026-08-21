@@ -126,6 +126,7 @@ export async function launchChromium(options: {
     `--user-data-dir=${options.userDataDir}`,
     `--proxy-server=${options.proxyUrl}`,
     '--proxy-bypass-list=<-loopback>',
+    '--no-startup-window',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
@@ -142,7 +143,6 @@ export async function launchChromium(options: {
     '--use-mock-keychain',
     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     `--window-size=${options.viewport?.width ?? 1280},${options.viewport?.height ?? 800}`,
-    'about:blank',
   ];
   if (options.headless) args.unshift('--headless=new');
   if (process.getuid?.() === 0 || allowNoSandbox) args.unshift('--no-sandbox');
@@ -174,8 +174,8 @@ export async function launchChromium(options: {
     // Some TypeScript-on-the-fly loaders wrap nested browser functions with this harmless helper.
     // Defining it in pages keeps development and packaged builds behaviorally identical.
     await context.addInitScript({ content: 'globalThis.__name = globalThis.__name || ((target) => target);' });
-    // CDP may expose the default context before its command-line about:blank page
-    // exists (most commonly on Windows). Guarantee the session starts with a page.
+    // --no-startup-window prevents a delayed platform-created tab from racing
+    // this deterministic initial page (most notably on Windows).
     if (context.pages().length === 0) await context.newPage();
     for (const page of context.pages()) {
       await page.evaluate('globalThis.__name = globalThis.__name || ((target) => target);').catch(() => undefined);
