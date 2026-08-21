@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node.js 22 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium and Linux dependencies
+        if: runner.os == 'Linux'
+        run: npx playwright install chromium --with-deps
+
+      - name: Install Chromium
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate package contents
+        run: npm pack --dry-run
+
+  docker:
+    name: Docker build and Chromium smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: project-tendril:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start hardened container
+        run: docker run --detach --rm --name project-tendril-ci --publish 127.0.0.1:3210:3210 --ipc=host --read-only --tmpfs /tmp:rw,nosuid,nodev,size=1g --security-opt seccomp=seccomp_profile.json --cap-drop ALL --cap-add SYS_CHROOT --env TENDRIL_TOKEN=ci-token project-tendril:ci
+
+      - name: Wait for health endpoint
+        run: |
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3210/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Exercise containerized Chromium
+        run: |
+          node --input-type=module <<'NODE'
+          const base = 'http://127.0.0.1:3210';
+          const headers = {
+            authorization: 'Bearer ci-token',
+            'content-type': 'application/json',
+          };
+
+          const created = await fetch(`${base}/v1/sessions`, {
+            method: 'POST',
+            headers,
+            body: '{}',
+          });
+          if (!created.ok) throw new Error(await created.text());
+          const session = await created.json();
+
+          try {
+            const navigation = await fetch(`${base}/v1/sessions/${session.id}/navigate`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ url: 'https://example.com' }),
+            });
+            if (!navigation.ok) throw new Error(await navigation.text());
+
+            const snapshot = await fetch(`${base}/v1/sessions/${session.id}/snapshot`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ mode: 'full' }),
+            });
+            const body = await snapshot.text();
+            if (!snapshot.ok || !body.includes('Example Domain')) throw new Error(body);
+          } finally {
+            await fetch(`${base}/v1/sessions/${session.id}`, {
+              method: 'DELETE',
+              headers,
+            });
+          }
+          NODE
+
+      - name: Print container logs
+        if: always()
+        run: docker logs project-tendril-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop project-tendril-ci || true

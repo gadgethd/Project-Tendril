@@ -1,0 +1,15 @@
+{
+  "host": "127.0.0.1",
+  "port": 3210,
+  "headless": true,
+  "maxSessions": 4,
+  "sessionIdleMs": 600000,
+  "actionTimeoutMs": 30000,
+  "navigationTimeoutMs": 60000,
+  "blockPrivateNetworks": true,
+  "allowedHosts": [],
+  "blockedHosts": [],
+  "workspaceRoots": [],
+  "searchProviders": ["bing", "duckduckgo", "google"],
+  "searxngUrl": "http://localhost:8080"
+}

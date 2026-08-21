@@ -1,0 +1,91 @@
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { TendrilError } from './errors.js';
+import type { LogRecord, TendrilConfig } from './types.js';
+
+export function newId(prefix: string): string {
+  return `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+}
+
+export function randomToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+export function hashText(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username) url.username = '[redacted]';
+    if (url.password) url.password = '[redacted]';
+    for (const key of [...url.searchParams.keys()]) {
+      if (/token|key|secret|password|auth|session/i.test(key)) url.searchParams.set(key, '[redacted]');
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+export class Logger {
+  constructor(private readonly minimum: TendrilConfig['logLevel'] = 'info') {}
+
+  log(level: LogRecord['level'], message: string, fields: Record<string, unknown> = {}): void {
+    const levels = ['debug', 'info', 'warn', 'error'];
+    if (levels.indexOf(level) < levels.indexOf(this.minimum)) return;
+    const record: LogRecord = { level, message, time: new Date().toISOString(), ...fields };
+    process.stderr.write(`${JSON.stringify(record)}\n`);
+  }
+
+  debug(message: string, fields?: Record<string, unknown>): void { this.log('debug', message, fields); }
+  info(message: string, fields?: Record<string, unknown>): void { this.log('info', message, fields); }
+  warn(message: string, fields?: Record<string, unknown>): void { this.log('warn', message, fields); }
+  error(message: string, fields?: Record<string, unknown>): void { this.log('error', message, fields); }
+}
+
+export async function ensureDir(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+}
+
+export async function assertPathWithinRoots(filePath: string, roots: string[]): Promise<string> {
+  let resolved: string;
+  try {
+    resolved = await realpath(filePath);
+    await stat(resolved);
+  } catch (error) {
+    throw new TendrilError('FILE_ACCESS_DENIED', `File does not exist or cannot be accessed: ${filePath}`, { cause: error });
+  }
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = await realpath(root);
+    } catch {
+      continue;
+    }
+    const relative = path.relative(resolvedRoot, resolved);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return resolved;
+  }
+  throw new TendrilError('FILE_ACCESS_DENIED', 'Path is outside configured workspace roots', {
+    details: { path: filePath },
+  });
+}
+
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new TendrilError('TIMEOUT', `${label} timed out after ${timeoutMs}ms`, { retryable: true })), timeoutMs);
+      timer.unref();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}

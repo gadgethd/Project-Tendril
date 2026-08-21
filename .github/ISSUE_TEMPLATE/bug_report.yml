@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem in Project Tendril
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Project Tendril. Search existing issues first and remove secrets, cookies, tokens, private URLs, and page content from logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: Project Tendril version
+      description: Run `tendril --version` or provide the commit SHA.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - stdio MCP
+        - Streamable HTTP MCP
+        - REST
+        - CDP
+        - CLI
+        - Dashboard
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version, Chromium version, and whether this is native or Docker.
+      placeholder: "Ubuntu 24.04, Node.js 22.19.0, Chromium 140, native"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest configuration, tool call, or command sequence that demonstrates the issue.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove bearer tokens, cookies, credentials, private URLs, and sensitive page data.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I ran `tendril doctor`.
+          required: true
+        - label: I removed secrets and sensitive browsing data.
+          required: true
+        - label: This is not a vulnerability report; security issues should use a private GitHub security advisory.
+          required: true

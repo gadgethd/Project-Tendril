@@ -1,0 +1,84 @@
+{
+  "name": "project-tendril",
+  "version": "1.0.0",
+  "description": "A local-first Chromium browser and web-research runtime for AI agents",
+  "keywords": [
+    "ai-agents",
+    "browser-automation",
+    "chromium",
+    "mcp",
+    "model-context-protocol",
+    "web-research"
+  ],
+  "homepage": "https://github.com/gadgethd/Project-Tendril#readme",
+  "bugs": {
+    "url": "https://github.com/gadgethd/Project-Tendril/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadgethd/Project-Tendril.git"
+  },
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "tendril": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "docs",
+    "Dockerfile",
+    "seccomp_profile.json",
+    "tendril.config.example.json"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js serve",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@mozilla/readability": "^0.6.0",
+    "commander": "^14.0.1",
+    "express": "^5.1.0",
+    "http-proxy": "^1.18.1",
+    "ipaddr.js": "^2.2.0",
+    "linkedom": "^0.18.12",
+    "playwright": "^1.62.1",
+    "robots-parser": "^3.0.1",
+    "turndown": "^7.2.4",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/http-proxy": "^1.17.16",
+    "@types/node": "^24.3.0",
+    "@types/turndown": "^5.0.5",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
