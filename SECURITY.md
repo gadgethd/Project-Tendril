@@ -54,11 +54,10 @@ The full operational model is documented in [docs/security.md](docs/security.md)
 The following are not vulnerabilities in Project Tendril:
 
 - A website detecting that it is being automated.
-- A CAPTCHA or bot challenge requiring human completion.
 - A website denying, throttling, or blocking automated traffic.
 - Actions performed by a client already holding the Tendril bearer token or CDP URL.
 - Prompt injection being present in page content that is already marked untrusted.
 - Private-network access after an operator explicitly disables the default block.
 - Attacks that require a modified Project Tendril binary or pre-existing host compromise.
 
-Reports about bypassing third-party access controls, CAPTCHAs, paywalls, or bot protections will not be accepted.
+Challenge resolution (CAPTCHAs, bot challenges) is an opt-in local capability. Reports about bypassing third-party access controls, paywalls, or bot protections via external services will not be accepted. Reports about improving local challenge resolution are welcome.

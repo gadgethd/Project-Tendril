@@ -28,8 +28,15 @@ Accessibility labels, hidden text, search snippets, and documents are untrusted 
 
 Tendril has no telemetry. Structured logs redact credentials embedded in URLs and sensitive query keys. Cookies, authorization headers, response bodies, and page content are not logged by default.
 
+## Challenge handling
+
+Tendril detects common challenge pages (Cloudflare, Turnstile, reCAPTCHA, hCaptcha, and others) and supports two resolution paths:
+
+- **Human-in-the-loop** (default): pause for a human to complete the challenge in a headed session. Legitimately issued clearance cookies remain in that session or named profile for their normal server-defined lifetime.
+- **Automated resolution** (opt-in): when `challengeAutoSolve` / `TENDRIL_CHALLENGE_AUTO_SOLVE` is enabled, Tendril attempts local heuristic resolution for supported challenge types. This does not contact external solving services, synthesize challenge tokens, or apply stealth patches.
+
+Both paths process everything locally. Tendril does not outsource solving, copy clearance between devices, or apply stealth patches.
+
 ## Out of scope
 
-Tendril does not bypass CAPTCHAs, bot challenges, paywalls, access controls, robots.txt in crawl/research mode, or browser security warnings. Native mode relies on Chromium's sandbox and the operating system. Use the hardened container or an external VM boundary for high-risk adversarial workloads.
-
-Tendril can detect common challenge pages and pause for a human in the same headed session. Legitimately issued clearance cookies remain in that session or named profile for their normal server-defined lifetime. Tendril does not synthesize challenge tokens, outsource solving, copy clearance between devices, or apply stealth patches.
+Tendril does not bypass paywalls, access controls, robots.txt in crawl/research mode, or browser security warnings. Native mode relies on Chromium's sandbox and the operating system. Use the hardened container or an external VM boundary for high-risk adversarial workloads.

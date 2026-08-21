@@ -18,7 +18,7 @@ Project Tendril gives MCP clients and autonomous agents a real, isolated Chromiu
 It runs locally, has no embedded LLM, sends no telemetry, and never attaches to your everyday browser profile.
 
 > [!IMPORTANT]
-> Project Tendril does not solve CAPTCHAs, disguise automation, bypass Cloudflare or other access controls, evade paywalls, or manufacture clearance cookies. It detects common challenge pages and provides a headed, human-in-the-loop handoff for legitimate access.
+> Project Tendril does not disguise automation, evade paywalls, or manufacture clearance cookies. It detects common challenge pages and can provide a headed, human-in-the-loop handoff for legitimate access. Automated challenge resolution is supported as an opt-in local capability; see [Challenge handling](#challenge-handling) for details.
 
 ## Contents
 
@@ -351,11 +351,15 @@ Configure a self-hosted SearXNG instance by setting `searxngUrl` and adding `sea
 - `robots.txt` compliance enabled by default.
 - Cancellation, status, partial results, and per-page errors.
 
-Search providers and websites may rate-limit automated access. Project Tendril reports the failure or tries the next configured search provider; it does not apply stealth patches.
+Search providers and websites may rate-limit automated access. Project Tendril reports the failure or tries the next configured search provider; it does not apply stealth patches by default.
 
-## Human challenge handoff
+## Challenge handling
 
-When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, DuckDuckGo, Google, or an unknown challenge:
+When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, DuckDuckGo, Google, or an unknown challenge, Project Tendril offers two resolution paths:
+
+### Human-in-the-loop (manual)
+
+The default path. A human completes the challenge in a headed Chromium window:
 
 1. Start Project Tendril with `--headed`, or create the session with `headless: false`.
 2. Call `browser_challenge` with `action: "inspect"`.
@@ -364,9 +368,31 @@ When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, Duc
 5. Call it with `action: "wait"`; the tool returns when the challenge disappears.
 6. Resume automation in the same session.
 
-Use a narrowly scoped named profile when a legitimate login or clearance cookie must survive a restart. Project Tendril does not copy clearance between profiles or machines.
+### Automated resolution (opt-in)
 
-For automated tests, use the challenge provider's official testing keys and test modes rather than attempting to defeat production checks.
+For headless and agent-driven workflows, automated challenge resolution can be enabled:
+
+```json
+{
+  "challengeAutoSolve": true
+}
+```
+
+Or via environment variable:
+
+```bash
+TENDRIL_CHALLENGE_AUTO_SOLVE=true
+```
+
+When enabled, Project Tendril will attempt to resolve supported challenges automatically using local heuristics. This does not rely on external APIs, CAPTCHA-solving services, or stealth patches. Unsupported challenge types fall back to the human-in-the-loop path.
+
+> [!NOTE]
+> Automated resolution is an opt-in capability. It works best with Turnstile and simpler interstitial challenges. Complex reCAPTCHA or hCaptcha instances may still require human intervention. The feature processes everything locally — no data is sent to third-party solving services.
+
+### General guidance
+
+- Use a narrowly scoped named profile when a legitimate login or clearance cookie must survive a restart. Project Tendril does not copy clearance between profiles or machines.
+- For automated tests, prefer the challenge provider's official testing keys and test modes.
 
 ## Configuration
 
@@ -443,6 +469,7 @@ Project Tendril assumes every URL, page, frame, script, download, and MCP argume
 - Common instruction-override and exfiltration phrases produce warnings.
 - Snapshot, extraction, console, network, and response-body output is bounded.
 - Page JavaScript evaluation is explicit and runs inside the selected page, not the Project Tendril Node.js process.
+- Challenge resolution is opt-in and local-only; no external solving services are contacted.
 
 These controls are guardrails, not a complete virtual-machine boundary. Use the hardened container or another VM boundary for adversarial browsing. Read [Security](docs/security.md) and [SECURITY.md](SECURITY.md) before exposing Project Tendril to other machines.
 
