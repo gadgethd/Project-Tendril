@@ -107,7 +107,8 @@ export async function launchChromium(options: {
   locale?: string;
   logger: Logger;
 }): Promise<ChromiumProcess> {
-  if (process.getuid?.() === 0 && process.env.TENDRIL_ALLOW_NO_SANDBOX !== 'true') {
+  const allowNoSandbox = process.env.TENDRIL_ALLOW_NO_SANDBOX === 'true';
+  if (process.getuid?.() === 0 && !allowNoSandbox) {
     throw new TendrilError('BROWSER_LAUNCH_FAILED', 'Tendril refuses to launch Chromium as root. Run as a non-root user.');
   }
   const executablePath = await findChromium(options.executablePath);
@@ -144,7 +145,7 @@ export async function launchChromium(options: {
     'about:blank',
   ];
   if (options.headless) args.unshift('--headless=new');
-  if (process.getuid?.() === 0) args.unshift('--no-sandbox');
+  if (process.getuid?.() === 0 || allowNoSandbox) args.unshift('--no-sandbox');
 
   const stderr: string[] = [];
   const child = spawn(executablePath, args, {

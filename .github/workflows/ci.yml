@@ -48,6 +48,10 @@ jobs:
         run: npm run typecheck
 
       - name: Test
+        # GitHub-hosted Ubuntu blocks the user namespaces used by Playwright's
+        # downloaded Chromium. The Docker job below verifies the real sandbox.
+        env:
+          TENDRIL_ALLOW_NO_SANDBOX: ${{ runner.os == 'Linux' && 'true' || 'false' }}
         run: npm test
 
       - name: Build
