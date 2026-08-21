@@ -33,6 +33,10 @@ jobs:
           npx playwright install chromium --with-deps
 
       - name: Verify release
+        # GitHub-hosted Ubuntu blocks the user namespaces used by Playwright's
+        # downloaded Chromium. CI's Docker job verifies the real sandbox.
+        env:
+          TENDRIL_ALLOW_NO_SANDBOX: "true"
         run: |
           npm run typecheck
           npm test
