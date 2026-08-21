@@ -289,12 +289,12 @@ export class TendrilSession {
     let text = '';
     if (response) {
       try { text = await response.text(); }
-      catch {
-        // Chromium can discard a navigation response body before Playwright
-        // reads it on some platforms. The rendered body is equivalent for
-        // the plain-text resources this helper consumes (such as robots.txt).
-        text = await page.locator('body').innerText().catch(() => '');
-      }
+      catch { /* Fall through to Chromium's rendered body below. */ }
+      // Chromium can discard a navigation response body before Playwright
+      // reads it on some platforms, returning either an error or an empty
+      // string. The rendered body is equivalent for the plain-text resources
+      // this helper consumes (such as robots.txt).
+      if (!text) text = await page.locator('body').innerText().catch(() => '');
     }
     if (Buffer.byteLength(text) > this.config.maxResponseBodyBytes) throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
     this.refs.clear();
