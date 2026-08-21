@@ -266,7 +266,15 @@ export class TendrilSession {
         throw new TendrilError('NETWORK_BLOCKED', `Navigation protocol ${parsed.protocol} is not allowed`);
       }
       await this.networkPolicy.resolve(parsed.toString());
-      response = await page.goto(options.url, { waitUntil: options.waitUntil ?? 'domcontentloaded' });
+      const gotoOptions = { waitUntil: options.waitUntil ?? 'domcontentloaded' } as const;
+      try {
+        response = await page.goto(options.url, gotoOptions);
+      } catch (error) {
+        const transientAbort = error instanceof Error && error.message.includes('net::ERR_ABORTED');
+        if (!transientAbort) throw error;
+        await page.waitForTimeout(100);
+        response = await page.goto(options.url, gotoOptions);
+      }
     } else if (action === 'back') response = await page.goBack({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
