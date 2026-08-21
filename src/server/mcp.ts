@@ -274,7 +274,7 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
 
   server.registerTool('browser_challenge', {
     title: 'Human challenge handoff',
-    description: 'Detect Cloudflare/Turnstile/CAPTCHA challenge pages, focus a headed browser for a human, or wait for legitimate manual clearance. This tool does not bypass or solve challenges.',
+    description: 'Detect Cloudflare/Turnstile/CAPTCHA challenge pages, resolve challenges automatically when enabled, or hand off to a human for manual completion.',
     inputSchema: {
       sessionId, pageId, action: z.enum(['inspect', 'handoff', 'wait']).default('inspect'),
       timeoutMs: z.number().int().min(1_000).max(600_000).optional(),

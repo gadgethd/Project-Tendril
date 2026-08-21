@@ -637,7 +637,7 @@ export class TendrilSession {
     if (kind) info.kind = kind;
     if (this.profile) info.profile = this.profile;
     if (provider) info.message = this.headless
-      ? 'Challenge detected. Recreate or run this session in headed mode for a human to complete it; Tendril will not automate CAPTCHA solving.'
+      ? 'Challenge detected. Enable challengeAutoSolve for automatic resolution, or recreate/run this session in headed mode for manual completion.'
       : 'Challenge detected. Tendril has focused the headed browser for manual completion; wait for resolution before resuming automation.';
     return info;
   }
