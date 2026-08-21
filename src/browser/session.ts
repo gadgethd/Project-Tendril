@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
 import { TendrilError } from '../errors.js';
@@ -285,6 +285,12 @@ export class TendrilSession {
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${parsed.protocol} is not allowed`);
     await this.networkPolicy.resolve(parsed.toString());
     const page = this.currentPage(pageId);
+    let resolveDownload: (download: Download | undefined) => void;
+    const downloadPromise = new Promise<Download | undefined>((resolve) => { resolveDownload = resolve; });
+    const handleDownload = (download: Download): void => {
+      if (download.url() === parsed.toString()) resolveDownload(download);
+    };
+    page.on('download', handleDownload);
     let response: Response | null = null;
     let navigationError: unknown;
     try {
@@ -301,6 +307,29 @@ export class TendrilSession {
     // it, or report an aborted plain-text navigation after rendering it. The
     // rendered body is equivalent for resources such as robots.txt.
     if (!text && page.url() === parsed.toString()) text = await page.locator('body').innerText().catch(() => '');
+    try {
+      if (!text && navigationError) {
+        // Chromium on Windows can classify a plain-text navigation as a download.
+        // Read that browser-owned file rather than bypassing the egress proxy with
+        // a separate HTTP client.
+        const download = await Promise.race([
+          downloadPromise,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2_000)),
+        ]);
+        if (download) {
+          const downloadPath = await download.path();
+          if (downloadPath) {
+            const downloaded = await stat(downloadPath);
+            if (downloaded.size > this.config.maxResponseBodyBytes) {
+              throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
+            }
+            text = await readFile(downloadPath, 'utf8');
+          }
+        }
+      }
+    } finally {
+      page.off('download', handleDownload);
+    }
     if (!response && !text && navigationError) throw navigationError;
     if (Buffer.byteLength(text) > this.config.maxResponseBodyBytes) throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
     this.refs.clear();
