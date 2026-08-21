@@ -37,6 +37,10 @@ describe('CrawlService', () => {
       dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1,
       blockPrivateNetworks: false, logLevel: 'error',
     } }));
+    const probe = await runtime.manager.create();
+    const robots = await probe.fetchText(`http://127.0.0.1:${port}/robots.txt`);
+    expect(robots.text).toContain('Disallow: /private');
+    await runtime.manager.close(probe.id);
     const job = runtime.crawl.start({ url: `http://127.0.0.1:${port}/`, maxPages: 5, maxDepth: 2 });
     let current = runtime.crawl.get(job.id);
     const deadline = Date.now() + 20_000;
