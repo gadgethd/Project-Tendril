@@ -285,17 +285,23 @@ export class TendrilSession {
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${parsed.protocol} is not allowed`);
     await this.networkPolicy.resolve(parsed.toString());
     const page = this.currentPage(pageId);
-    const response = await page.goto(parsed.toString(), { waitUntil: 'domcontentloaded' });
+    let response: Response | null = null;
+    let navigationError: unknown;
+    try {
+      response = await page.goto(parsed.toString(), { waitUntil: 'domcontentloaded' });
+    } catch (error) {
+      navigationError = error;
+    }
     let text = '';
     if (response) {
       try { text = await response.text(); }
       catch { /* Fall through to Chromium's rendered body below. */ }
-      // Chromium can discard a navigation response body before Playwright
-      // reads it on some platforms, returning either an error or an empty
-      // string. The rendered body is equivalent for the plain-text resources
-      // this helper consumes (such as robots.txt).
-      if (!text) text = await page.locator('body').innerText().catch(() => '');
     }
+    // Chromium can discard a navigation response body before Playwright reads
+    // it, or report an aborted plain-text navigation after rendering it. The
+    // rendered body is equivalent for resources such as robots.txt.
+    if (!text && page.url() === parsed.toString()) text = await page.locator('body').innerText().catch(() => '');
+    if (!response && !text && navigationError) throw navigationError;
     if (Buffer.byteLength(text) > this.config.maxResponseBodyBytes) throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
     this.refs.clear();
     return { status: response?.status() ?? null, text };
