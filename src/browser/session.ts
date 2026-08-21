@@ -1,6 +1,6 @@
-import { readFile, rm, stat } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
+import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response, Route } from 'playwright';
 import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
@@ -285,55 +285,48 @@ export class TendrilSession {
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${parsed.protocol} is not allowed`);
     await this.networkPolicy.resolve(parsed.toString());
     const page = this.currentPage(pageId);
-    let resolveDownload: (download: Download | undefined) => void;
-    const downloadPromise = new Promise<Download | undefined>((resolve) => { resolveDownload = resolve; });
-    const handleDownload = (download: Download): void => {
-      if (download.url() === parsed.toString()) resolveDownload(download);
+    const bootstrapUrl = new URL(`/.well-known/project-tendril-fetch/${newId('origin')}`, parsed.origin).toString();
+    const bootstrapRoute = async (route: Route): Promise<void> => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: '<!doctype html><title>Project Tendril fetch context</title>',
+      });
     };
-    page.on('download', handleDownload);
-    let response: Response | null = null;
-    let navigationError: unknown;
+    await page.route(bootstrapUrl, bootstrapRoute);
     try {
-      response = await page.goto(parsed.toString(), { waitUntil: 'domcontentloaded' });
-    } catch (error) {
-      navigationError = error;
-    }
-    let text = '';
-    if (response) {
-      try { text = await response.text(); }
-      catch { /* Fall through to Chromium's rendered body below. */ }
-    }
-    // Chromium can discard a navigation response body before Playwright reads
-    // it, or report an aborted plain-text navigation after rendering it. The
-    // rendered body is equivalent for resources such as robots.txt.
-    if (!text && page.url() === parsed.toString()) text = await page.locator('body').innerText().catch(() => '');
-    try {
-      if (!text && navigationError) {
-        // Chromium on Windows can classify a plain-text navigation as a download.
-        // Read that browser-owned file rather than bypassing the egress proxy with
-        // a separate HTTP client.
-        const download = await Promise.race([
-          downloadPromise,
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2_000)),
-        ]);
-        if (download) {
-          const downloadPath = await download.path();
-          if (downloadPath) {
-            const downloaded = await stat(downloadPath);
-            if (downloaded.size > this.config.maxResponseBodyBytes) {
-              throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
-            }
-            text = await readFile(downloadPath, 'utf8');
-          }
-        }
-      }
+      await page.goto(bootstrapUrl, { waitUntil: 'domcontentloaded' });
     } finally {
-      page.off('download', handleDownload);
+      await page.unroute(bootstrapUrl, bootstrapRoute);
     }
-    if (!response && !text && navigationError) throw navigationError;
-    if (Buffer.byteLength(text) > this.config.maxResponseBodyBytes) throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
+    const result = await page.evaluate(async ({ target, maxBytes }) => {
+      const response = await fetch(target, { cache: 'no-store', credentials: 'include' });
+      if (!response.body) return { status: response.status, text: '', tooLarge: false };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let bytes = 0;
+      let text = '';
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel();
+          return { status: response.status, text: '', tooLarge: true };
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      return { status: response.status, text, tooLarge: false };
+    }, { target: parsed.toString(), maxBytes: this.config.maxResponseBodyBytes });
+    if (result.tooLarge) {
+      throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
+    }
+    if (Buffer.byteLength(result.text) > this.config.maxResponseBodyBytes) {
+      throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
+    }
     this.refs.clear();
-    return { status: response?.status() ?? null, text };
+    return { status: result.status, text: result.text };
   }
 
   async snapshot(options: { pageId?: string; mode?: SnapshotResult['mode']; maxChars?: number; cursor?: string } = {}): Promise<SnapshotResult> {
