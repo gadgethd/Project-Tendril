@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
-import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response, Route } from 'playwright';
+import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
 import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
@@ -281,52 +282,86 @@ export class TendrilSession {
   }
 
   async fetchText(url: string, pageId?: string): Promise<{ status: number | null; text: string }> {
-    const parsed = new URL(url);
-    if (!['http:', 'https:'].includes(parsed.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${parsed.protocol} is not allowed`);
-    await this.networkPolicy.resolve(parsed.toString());
-    const page = this.currentPage(pageId);
-    const bootstrapUrl = new URL(`/.well-known/project-tendril-fetch/${newId('origin')}`, parsed.origin).toString();
-    const bootstrapRoute = async (route: Route): Promise<void> => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'text/html; charset=utf-8',
-        body: '<!doctype html><title>Project Tendril fetch context</title>',
+    this.currentPage(pageId);
+    let target = new URL(url);
+    if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
+    const proxy = new URL(this.proxy.url());
+    for (let redirects = 0; redirects <= 5; redirects += 1) {
+      await this.networkPolicy.resolve(target.toString());
+      const result = await new Promise<{ status: number; text: string; location?: string }>((resolve, reject) => {
+        let settled = false;
+        const request = http.request({
+          hostname: proxy.hostname,
+          port: proxy.port,
+          method: 'GET',
+          path: target.toString(),
+          headers: {
+            accept: 'text/plain,*/*;q=0.1',
+            'accept-encoding': 'identity',
+            connection: 'close',
+            host: target.host,
+            'user-agent': 'Project-Tendril/1.0',
+          },
+        }, (response) => {
+          const status = response.statusCode ?? 0;
+          const location = response.headers.location;
+          if (location && [301, 302, 303, 307, 308].includes(status)) {
+            settled = true;
+            response.resume();
+            resolve({ status, text: '', location });
+            return;
+          }
+          const rawLength = response.headers['content-length'];
+          const contentLength = Number(Array.isArray(rawLength) ? rawLength[0] : rawLength);
+          if (Number.isFinite(contentLength) && contentLength > this.config.maxResponseBodyBytes) {
+            settled = true;
+            response.destroy();
+            reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          response.on('data', (chunk: Buffer) => {
+            if (settled) return;
+            bytes += chunk.byteLength;
+            if (bytes > this.config.maxResponseBodyBytes) {
+              settled = true;
+              response.destroy();
+              reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          response.once('end', () => {
+            if (settled) return;
+            settled = true;
+            resolve({ status, text: Buffer.concat(chunks).toString('utf8') });
+          });
+          response.once('error', (error) => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          });
+        });
+        request.setTimeout(this.config.navigationTimeoutMs, () => {
+          request.destroy(new TendrilError('TIMEOUT', `Timed out fetching ${target.toString()}`, { retryable: true }));
+        });
+        request.once('error', (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+        request.end();
       });
-    };
-    await page.route(bootstrapUrl, bootstrapRoute);
-    try {
-      await page.goto(bootstrapUrl, { waitUntil: 'domcontentloaded' });
-    } finally {
-      await page.unroute(bootstrapUrl, bootstrapRoute);
-    }
-    const result = await page.evaluate(async ({ target, maxBytes }) => {
-      const response = await fetch(target, { cache: 'no-store', credentials: 'include' });
-      if (!response.body) return { status: response.status, text: '', tooLarge: false };
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let bytes = 0;
-      let text = '';
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > maxBytes) {
-          await reader.cancel();
-          return { status: response.status, text: '', tooLarge: true };
-        }
-        text += decoder.decode(chunk.value, { stream: true });
+      if (result.location) {
+        target = new URL(result.location, target);
+        if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
+        continue;
       }
-      text += decoder.decode();
-      return { status: response.status, text, tooLarge: false };
-    }, { target: parsed.toString(), maxBytes: this.config.maxResponseBodyBytes });
-    if (result.tooLarge) {
-      throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
+      this.refs.clear();
+      return { status: result.status, text: result.text };
     }
-    if (Buffer.byteLength(result.text) > this.config.maxResponseBodyBytes) {
-      throw new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit');
-    }
-    this.refs.clear();
-    return { status: result.status, text: result.text };
+    throw new TendrilError('TIMEOUT', `Too many redirects fetching ${url}`, { retryable: true });
   }
 
   async snapshot(options: { pageId?: string; mode?: SnapshotResult['mode']; maxChars?: number; cursor?: string } = {}): Promise<SnapshotResult> {
