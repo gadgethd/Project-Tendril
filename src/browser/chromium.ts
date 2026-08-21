@@ -173,6 +173,9 @@ export async function launchChromium(options: {
     // Some TypeScript-on-the-fly loaders wrap nested browser functions with this harmless helper.
     // Defining it in pages keeps development and packaged builds behaviorally identical.
     await context.addInitScript({ content: 'globalThis.__name = globalThis.__name || ((target) => target);' });
+    // CDP may expose the default context before its command-line about:blank page
+    // exists (most commonly on Windows). Guarantee the session starts with a page.
+    if (context.pages().length === 0) await context.newPage();
     for (const page of context.pages()) {
       await page.evaluate('globalThis.__name = globalThis.__name || ((target) => target);').catch(() => undefined);
     }
