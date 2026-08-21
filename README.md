@@ -1,5 +1,9 @@
 # Project Tendril
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gadgethd/Project-Tendril/main/project-tendril_picture.png" alt="Project Tendril visual: luminous digital tendrils connecting isolated browser windows" width="100%">
+</p>
+
 [![CI](https://github.com/gadgethd/Project-Tendril/actions/workflows/ci.yml/badge.svg)](https://github.com/gadgethd/Project-Tendril/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/gadgethd/Project-Tendril/actions/workflows/codeql.yml/badge.svg)](https://github.com/gadgethd/Project-Tendril/actions/workflows/codeql.yml)
 [![GitHub release](https://img.shields.io/github/v/release/gadgethd/Project-Tendril?display_name=tag&sort=semver)](https://github.com/gadgethd/Project-Tendril/releases)
