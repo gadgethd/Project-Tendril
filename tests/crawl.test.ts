@@ -47,7 +47,8 @@ describe('CrawlService', () => {
     expect(current.status).toBe('completed');
     expect(current.results.find((item) => item.url.endsWith('/page'))?.markdown).toContain('Allowed page');
     const privateResult = current.results.find((item) => item.url.endsWith('/private'));
-    expect(privateResult?.error).toBe('Blocked by robots.txt');
+    const diagnostics = JSON.stringify({ privateRequests, results: current.results });
+    expect(privateResult?.error, diagnostics).toBe('Blocked by robots.txt');
     expect(privateRequests).toBe(0);
   });
 });
