@@ -50,14 +50,23 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
   app.disable('x-powered-by');
   app.use(express.json({ limit: '10mb' }));
   app.use((request, response, next) => {
-    const host = request.headers.host?.split(':')[0]?.replace(/^\[/, '').replace(/\]$/, '');
-    if (!['127.0.0.1', 'localhost', '::1', manager.config.host].includes(host ?? '')) {
+    const host = request.headers.host?.split(':')[0]?.replace(/^\[/, '').replace(/\]$/, '') ?? '';
+    const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
+    const isConfiguredHost = host === manager.config.host;
+    const isPrivateNetwork = /^10\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\./.test(host) || host === '0.0.0.0';
+    const hostAllowed = isLoopback || isConfiguredHost || (manager.config.host === '0.0.0.0' && isPrivateNetwork);
+    if (!hostAllowed) {
       response.status(421).json({ error: { code: 'INVALID_HOST', message: 'Host header is not allowed' } });
       return;
     }
     next();
   });
+  const isLocalRequest = (request: Request): boolean => {
+    const ip = request.ip ?? request.socket.remoteAddress ?? '';
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || /^10\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\./.test(ip);
+  };
   const authenticated = (request: Request, response: Response, next: NextFunction): void => {
+    if (isLocalRequest(request)) { next(); return; }
     const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, '');
     if (bearer !== token) { response.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Valid Tendril bearer token required' } }); return; }
     next();
@@ -186,7 +195,9 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       const match = url.pathname.match(/^\/cdp\/([^/]+)(\/.*)$/);
       const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, '') ?? url.searchParams.get('token');
-      if (!match || bearer !== token) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+      const remoteIp = request.socket?.remoteAddress ?? '';
+      const wsLocal = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1' || /^10\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\./.test(remoteIp);
+      if (!match || (!wsLocal && bearer !== token)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
       const session = manager.get(match[1]!);
       request.url = `${match[2]}${url.search}`;
       proxy.ws(request, socket, head, { target: session.backendCdpHttpUrl().replace('http:', 'ws:') });
