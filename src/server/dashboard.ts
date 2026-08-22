@@ -140,7 +140,8 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       padding:14px 16px;
       border-bottom:1px solid var(--border);
     }
-    .heading-copy{gap:9px}
+    .heading-copy,.heading-actions{gap:9px}
+    .heading-actions{display:flex;align-items:center}
     .eyebrow{margin:0;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
     .count-badge{
       min-width:25px;
@@ -197,6 +198,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     button.primary:hover:not(:disabled){border-color:var(--blue-bright);background:linear-gradient(135deg,#4f8ff7,#2d6dea)}
     button.ghost{border-color:transparent;background:transparent;color:var(--muted-strong)}
     button.ghost:hover:not(:disabled){border-color:var(--border);background:rgba(148,163,184,.07);color:var(--text)}
+    button.close-all{height:27px;padding:0 7px;font-size:10px}
     button.danger-action{height:27px;border-color:rgba(239,68,68,.34);border-radius:7px;background:rgba(127,29,29,.24);color:#fca5a5;padding:0 8px;font-size:10px}
     button.busy::after{
       content:"";
@@ -218,7 +220,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     }
     .session-card{
       position:relative;
-      padding:12px;
+      padding:12px 40px 12px 12px;
       border:1px solid var(--border);
       border-radius:11px;
       background:rgba(15,17,23,.5);
@@ -242,6 +244,20 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     .session-card.active .session-indicator{background:var(--blue-bright);box-shadow:0 0 0 4px rgba(59,130,246,.12),0 0 9px rgba(96,165,250,.65)}
     .session-card.challenge .session-indicator{background:var(--danger);box-shadow:0 0 0 4px rgba(239,68,68,.12),0 0 10px rgba(239,68,68,.7)}
     .session-id{overflow:hidden;color:var(--text);font:650 12px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis;white-space:nowrap}
+    .session-close{
+      position:absolute;
+      top:7px;
+      right:7px;
+      width:25px;
+      height:25px;
+      padding:0;
+      border-color:transparent;
+      background:transparent;
+      color:var(--muted);
+      font-size:15px;
+      line-height:1;
+    }
+    .session-close:hover:not(:disabled){border-color:rgba(239,68,68,.3);background:rgba(127,29,29,.18);color:#fca5a5}
     .challenge-badge{
       flex:0 0 auto;
       padding:3px 6px;
@@ -254,7 +270,8 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       letter-spacing:.08em;
       text-transform:uppercase;
     }
-    .session-page{margin:9px 0 10px;overflow:hidden;color:var(--muted-strong);font-size:11px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
+    .session-page{margin:9px 0 3px;overflow:hidden;color:var(--muted-strong);font-size:11px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
+    .session-url{margin:0 0 10px;overflow:hidden;color:#64748b;font:9px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis;white-space:nowrap}
     .session-meta{justify-content:space-between;gap:8px;color:var(--muted);font:10px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace}
     .session-meta-group{display:flex;align-items:center;gap:8px}
     .meta-separator{width:3px;height:3px;border-radius:50%;background:#4b5563}
@@ -299,6 +316,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     .page-title{overflow:hidden;color:var(--muted-strong);font-size:11px;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
     .page-url{margin-top:2px;overflow:hidden;color:#64748b;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis;white-space:nowrap}
     .preview-state{gap:8px;flex:0 0 auto;color:var(--muted);font-size:10px}
+    .zoom-indicator{min-width:36px;color:var(--muted-strong);font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
     .live-label{display:inline-flex;align-items:center;gap:6px;color:var(--blue-bright);font-weight:700;letter-spacing:.07em;text-transform:uppercase}
     .live-label::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--blue-bright);box-shadow:0 0 9px rgba(96,165,250,.7)}
     .live-label.paused{color:var(--muted)}
@@ -309,8 +327,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       position:relative;
       min-height:0;
       overflow:auto;
-      display:grid;
-      place-items:center;
+      display:block;
       padding:18px;
       background:
         linear-gradient(rgba(148,163,184,.025) 1px,transparent 1px),
@@ -323,16 +340,16 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     }
     .preview-surface img{
       display:block;
+      width:100%;
+      height:auto;
       max-width:100%;
-      max-height:100%;
       margin:auto;
       border:1px solid rgba(148,163,184,.18);
       border-radius:8px;
       background:#fff;
       box-shadow:0 22px 55px rgba(0,0,0,.42);
-      object-fit:contain;
     }
-    .preview-empty{max-width:340px;padding:24px;text-align:center;color:var(--muted)}
+    .preview-empty{position:absolute;top:50%;left:50%;width:min(340px,calc(100% - 48px));padding:24px;text-align:center;color:var(--muted);transform:translate(-50%,-50%)}
     .empty-orbit{
       position:relative;
       width:54px;
@@ -376,7 +393,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     }
     .pause-overlay span{padding:8px 11px;border:1px solid var(--border-strong);border-radius:8px;background:rgba(15,17,23,.88);color:var(--muted-strong);font-size:10px;box-shadow:0 12px 30px rgba(0,0,0,.3)}
     .preview-surface.paused .pause-overlay{display:grid}
-    .diagnostics{display:grid;grid-template-rows:43px minmax(0,1fr);min-height:0;border-top:1px solid var(--border);background:rgba(15,17,23,.42)}
+    .diagnostics{display:grid;grid-template-rows:43px minmax(0,1fr);min-height:0;overflow:hidden;border-top:1px solid var(--border);background:rgba(15,17,23,.42)}
     .diagnostic-header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding-right:11px}
     .tab-bar{height:100%;gap:2px;padding-left:8px}
     .tab-button{position:relative;height:100%;border:0;border-radius:0;background:transparent;color:var(--muted);padding:0 12px;font-size:11px}
@@ -385,7 +402,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     .tab-button.active::after{content:"";position:absolute;right:10px;bottom:0;left:10px;height:2px;border-radius:2px 2px 0 0;background:linear-gradient(90deg,var(--blue),var(--purple));box-shadow:0 0 8px rgba(59,130,246,.35)}
     .tab-meta{gap:8px;color:#64748b;font-size:9px}
     .tab-meta button{width:27px;height:27px;padding:0;border-color:transparent;background:transparent;color:var(--muted);font-size:15px}
-    .panel-output{margin:0;min-height:0;overflow:auto;padding:14px 16px;color:#cbd5e1;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-color:#3a4254 transparent;scrollbar-width:thin}
+    .panel-output{height:100%;min-width:0;min-height:0;max-height:100%;margin:0;overflow:auto;padding:14px 16px;color:#cbd5e1;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-color:#3a4254 transparent;scrollbar-width:thin}
     .toast{
       position:fixed;
       z-index:50;
@@ -472,7 +489,10 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     <aside class="panel sidebar" aria-label="Browser sessions">
       <div class="panel-heading">
         <div class="heading-copy"><p class="eyebrow">Sessions</p></div>
-        <span id="session-count" class="count-badge">0</span>
+        <div class="heading-actions">
+          <span id="session-count" class="count-badge">0</span>
+          <button id="close-all" class="ghost close-all" type="button" disabled>Close All</button>
+        </div>
       </div>
       <form id="create-form" class="session-create">
         <label class="field-label" for="profile">Profile name <span>optional</span></label>
@@ -518,6 +538,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
           <div class="preview-state">
             <span id="challenge-state" class="challenge-badge" hidden>CAPTCHA</span>
             <span id="live-label" class="live-label">Live</span>
+            <span id="zoom-indicator" class="zoom-indicator" title="Use the mouse wheel over the preview to zoom">100%</span>
             <span id="refresh-time">Waiting</span>
             <button id="preview-toggle" class="ghost" type="button" aria-pressed="false">Pause</button>
           </div>
@@ -561,6 +582,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       output:'Create a session to begin. Snapshot, extraction, and search results will appear here.',
       logs:[],
       previewPaused:false,
+      previewZoom:1,
       previewBusy:false,
       sessionsBusy:false,
       toastTimer:null,
@@ -645,6 +667,42 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
 
     function selectedPage(session){return session&&session.pages.find(page=>page.selected)||session&&session.pages[0]}
 
+    function setPreviewZoom(value,anchor){
+      const surface=$('preview');
+      const image=$('preview-image');
+      const previous=state.previewZoom;
+      const zoom=Math.min(3,Math.max(.25,Math.round(value*20)/20));
+      if(zoom===previous)return;
+      const contentX=anchor?surface.scrollLeft+anchor.x:0;
+      const contentY=anchor?surface.scrollTop+anchor.y:0;
+      state.previewZoom=zoom;
+      image.style.width=zoom*100+'%';
+      image.style.maxWidth='none';
+      $('zoom-indicator').textContent=Math.round(zoom*100)+'%';
+      if(anchor){
+        const ratio=zoom/previous;
+        surface.scrollLeft=contentX*ratio-anchor.x;
+        surface.scrollTop=contentY*ratio-anchor.y;
+      }
+    }
+
+    function resetPreviewZoom(){
+      state.previewZoom=1;
+      $('preview-image').style.width='100%';
+      $('preview-image').style.maxWidth='none';
+      $('zoom-indicator').textContent='100%';
+      $('preview').scrollTo({left:0,top:0});
+    }
+
+    function clearPreview(){
+      const image=$('preview-image');
+      image.hidden=true;
+      image.removeAttribute('src');
+      $('preview-empty').hidden=false;
+      $('refresh-time').textContent='Waiting';
+      resetPreviewZoom();
+    }
+
     function updateWorkspaceContext(){
       const session=selectedSession();
       const page=selectedPage(session);
@@ -661,6 +719,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       container.replaceChildren();
       $('session-count').textContent=String(state.sessions.length);
       $('session-summary').textContent=state.sessions.length+' session'+(state.sessions.length===1?'':'s');
+      $('close-all').disabled=!state.sessions.length;
       if(!state.sessions.length){
         const empty=document.createElement('div');
         empty.className='sidebar-empty';
@@ -701,12 +760,25 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
           titleRow.append(badge);
         }
 
+        const close=document.createElement('button');
+        close.type='button';
+        close.className='session-close';
+        close.textContent='×';
+        close.title='Close session';
+        close.setAttribute('aria-label','Close session '+session.id);
+        close.onclick=event=>{event.stopPropagation();void closeSession(session.id,close)};
+        close.onkeydown=event=>event.stopPropagation();
+
         const page=selectedPage(session);
         const pageLine=document.createElement('div');
         pageLine.className='session-page';
-        const pageLabel=page&&(page.title||page.url)?page.title||page.url:'Blank page';
+        const pageLabel=page&&page.title?page.title:'Blank page';
         pageLine.textContent=session.profile?session.profile+' · '+pageLabel:pageLabel;
-        pageLine.title=page&&page.url?page.url:'';
+        pageLine.title=page&&page.title?page.title:'';
+        const urlLine=document.createElement('div');
+        urlLine.className='session-url';
+        urlLine.textContent=page&&page.url?page.url:'No page URL';
+        urlLine.title=page&&page.url?page.url:'';
 
         const meta=document.createElement('div');
         meta.className='session-meta';
@@ -731,10 +803,10 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
           meta.replaceChildren(metaGroup,solve);
         }
 
-        card.append(titleRow,pageLine,meta);
+        card.append(titleRow,close,pageLine,urlLine,meta);
         card.onclick=()=>selectSession(session.id);
         card.onkeydown=event=>{
-          if(event.key==='Enter'||event.key===' '){event.preventDefault();selectSession(session.id)}
+          if(event.target===card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();selectSession(session.id)}
         };
         container.append(card);
       }
@@ -762,9 +834,11 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       if(state.sessionsBusy)return;
       state.sessionsBusy=true;
       try{
+        const previousSession=state.session;
         const data=await api('/v1/sessions');
         state.sessions=Array.isArray(data.sessions)?data.sessions:[];
         if(!state.session||!state.sessions.some(session=>session.id===state.session))state.session=state.sessions[0]?.id||null;
+        if(previousSession!==state.session)clearPreview();
         await refreshChallenges(state.sessions);
         setConnection('online','Online');
         renderSessions();
@@ -783,8 +857,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       setPreviewPaused(false);
       renderSessions();
       if(changed){
-        $('preview-image').hidden=true;
-        $('preview-empty').hidden=false;
+        clearPreview();
         $('refresh-time').textContent='Refreshing';
       }
       void refreshPreview(true);
@@ -813,6 +886,8 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
       });
       if(state.session!==sessionId)return;
       $('preview-image').src=source;
+      $('preview-image').style.width=state.previewZoom*100+'%';
+      $('preview-image').style.maxWidth='none';
       $('preview-image').hidden=false;
       $('preview-empty').hidden=true;
     }
@@ -858,6 +933,39 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
         showToast('Challenge handoff requested.');
         state.session=sessionId;
         await refreshSessions();
+      });
+    }
+
+    async function closeSession(sessionId,button){
+      await runAction(button,async()=>{
+        await api('/v1/sessions/'+encodeURIComponent(sessionId),{method:'DELETE'});
+        state.challenges.delete(sessionId);
+        if(state.session===sessionId){
+          state.session=null;
+          clearPreview();
+        }
+        writeLog({event:'Session closed',sessionId});
+        await refreshSessions();
+        if(state.session)await refreshPreview(true);
+        showToast('Browser session closed.');
+      });
+    }
+
+    async function closeAllSessions(){
+      const sessions=[...state.sessions];
+      if(!sessions.length)return;
+      if(!confirm('Close all '+sessions.length+' browser session'+(sessions.length===1?'':'s')+'?'))return;
+      await runAction($('close-all'),async()=>{
+        const results=await Promise.allSettled(sessions.map(session=>api('/v1/sessions/'+encodeURIComponent(session.id),{method:'DELETE'})));
+        const failures=results.filter(result=>result.status==='rejected');
+        state.session=null;
+        state.challenges.clear();
+        clearPreview();
+        writeLog({event:'All sessions closed',closed:sessions.length-failures.length,failed:failures.length});
+        await refreshSessions();
+        if(state.session)await refreshPreview(true);
+        if(failures.length)throw new Error('Could not close '+failures.length+' session'+(failures.length===1?'':'s')+'.');
+        showToast('All browser sessions closed.');
       });
     }
 
@@ -984,11 +1092,31 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
 
     $('preview-toggle').onclick=event=>{event.stopPropagation();togglePreview()};
     $('preview').onclick=togglePreview;
+    $('preview').addEventListener('wheel',event=>{
+      if($('preview-image').hidden)return;
+      event.preventDefault();
+      const bounds=$('preview').getBoundingClientRect();
+      const anchor={x:event.clientX-bounds.left,y:event.clientY-bounds.top};
+      setPreviewZoom(state.previewZoom*(event.deltaY<0?1.1:1/1.1),anchor);
+    },{passive:false});
     $('preview').onkeydown=event=>{
       if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePreview()}
     };
+    $('url').onkeydown=event=>{
+      if(event.key==='Enter'){
+        event.preventDefault();
+        $('navigate-form').requestSubmit();
+      }
+    };
+    $('close-all').onclick=()=>void closeAllSessions();
     $('refresh-tab').onclick=()=>void refreshActiveTab();
     document.querySelectorAll('.tab-button').forEach(button=>button.onclick=()=>setActiveTab(button.dataset.tab));
+    document.addEventListener('keydown',event=>{
+      if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='n'){
+        event.preventDefault();
+        if(!$('create').disabled)$('create-form').requestSubmit();
+      }
+    });
     document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!state.previewPaused)void refreshPreview(true)});
 
     void refreshSessions().then(()=>refreshPreview(true));
