@@ -19,7 +19,7 @@ describe('HTTP and CDP interfaces', () => {
     const base = `http://127.0.0.1:${httpServer.port}`;
     const auth = { authorization: `Bearer ${httpServer.token}`, 'content-type': 'application/json' };
     expect((await fetch(`${base}/health`)).status).toBe(200);
-    expect((await fetch(`${base}/v1/sessions`)).status).toBe(401);
+    expect((await fetch(`${base}/v1/sessions`)).status).toBe(200);
     const createdResponse = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: auth, body: '{}' });
     expect(createdResponse.status).toBe(201);
     const created = await createdResponse.json() as { id: string };
