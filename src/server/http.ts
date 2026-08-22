@@ -128,6 +128,16 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
   app.post('/v1/sessions/:id/capture', async (request, response, next) => {
     try { response.json(await manager.get(request.params.id!).capture(request.body)); } catch (error) { next(error); }
   });
+  app.get('/v1/sessions/:id/screenshot', async (request, response, next) => {
+    try {
+      const requestedFormat = request.query.format;
+      if (requestedFormat !== undefined && requestedFormat !== 'png' && requestedFormat !== 'jpeg') throw new Error('format must be png or jpeg');
+      const format: 'png' | 'jpeg' = requestedFormat === 'jpeg' ? 'jpeg' : 'png';
+      const quality = Number(request.query.quality ?? 80);
+      if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new Error('quality must be an integer from 1 to 100');
+      response.json(await manager.get(request.params.id!).capture({ format, quality }));
+    } catch (error) { next(error); }
+  });
   app.get('/v1/sessions/:id/inspect/:kind', async (request, response, next) => {
     try { response.json({ entries: manager.get(request.params.id!).inspect({ kind: request.params.kind as 'console' | 'network' | 'downloads' }) }); } catch (error) { next(error); }
   });
@@ -230,6 +240,7 @@ function openApiDocument(port: number): Record<string, unknown> {
     paths: {
       '/v1/sessions': { get: { summary: 'List browser sessions' }, post: { summary: 'Create browser session' } },
       '/v1/sessions/{id}': { get: { summary: 'Inspect session' }, delete: { summary: 'Close session' } },
+      '/v1/sessions/{id}/screenshot': { get: { summary: 'Capture a live session screenshot' } },
       '/v1/snapshot': { post: { summary: 'Capture multiple rendered page formats' } },
       '/v1/content': { post: { summary: 'Extract rendered HTML' } }, '/v1/markdown': { post: { summary: 'Extract Markdown' } },
       '/v1/accessibility-tree': { post: { summary: 'Extract semantic tree' } }, '/v1/links': { post: { summary: 'Extract links' } },
