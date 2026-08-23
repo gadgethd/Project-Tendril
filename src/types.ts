@@ -50,6 +50,21 @@ export interface SessionInfo {
   cdpUrl?: string;
 }
 
+export interface BrowserCaptureOptions {
+  pageId?: string;
+  format?: 'png' | 'jpeg' | 'pdf';
+  fullPage?: boolean;
+  ref?: string;
+  quality?: number;
+  savePath?: string;
+}
+
+export interface BrowserCaptureResult {
+  mimeType: string;
+  data: string;
+  savePath?: string;
+}
+
 export interface PageSummary {
   id: PageId;
   url: string;

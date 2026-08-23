@@ -20,14 +20,19 @@ function result(value: unknown) {
   };
 }
 
-function imageResult(value: { mimeType: string; data: string }) {
+function imageResult(value: { mimeType: string; data: string; savePath?: string }) {
   if (value.mimeType.startsWith('image/')) {
+    const metadata: { mimeType: string; bytes: number; savePath?: string } = {
+      mimeType: value.mimeType,
+      bytes: Buffer.byteLength(value.data, 'base64'),
+    };
+    if (value.savePath) metadata.savePath = value.savePath;
     return {
       content: [
         { type: 'image' as const, data: value.data, mimeType: value.mimeType },
-        { type: 'text' as const, text: JSON.stringify({ mimeType: value.mimeType, bytes: Buffer.byteLength(value.data, 'base64') }) },
+        { type: 'text' as const, text: JSON.stringify(metadata) },
       ],
-      structuredContent: { mimeType: value.mimeType, bytes: Buffer.byteLength(value.data, 'base64') },
+      structuredContent: metadata,
     };
   }
   return result(value);
@@ -201,12 +206,12 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
 
   server.registerTool('browser_capture', {
     title: 'Capture screenshot or PDF',
-    description: 'Capture a viewport, full page, element screenshot, or PDF. Images are returned as MCP image content.',
+    description: 'Capture a viewport, full page, element screenshot, or PDF. Images are returned as MCP image content and can optionally be saved to a local file.',
     inputSchema: {
       sessionId, pageId, format: z.enum(['png', 'jpeg', 'pdf']).default('png'), fullPage: z.boolean().optional(),
-      ref: z.string().optional(), quality: z.number().int().min(1).max(100).optional(),
+      ref: z.string().optional(), quality: z.number().int().min(1).max(100).optional(), savePath: z.string().min(1).optional(),
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   }, wrap(async (input) => imageResult(await manager.get(input.sessionId).capture(input))));
 
   server.registerTool('browser_evaluate', {
