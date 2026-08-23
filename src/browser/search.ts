@@ -3,6 +3,57 @@ import type { EvidenceChunk, SearchProviderName, SearchResult } from '../types.j
 import type { Logger } from '../util.js';
 import type { BrowserManager } from './manager.js';
 
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 100;
+const MAX_SEARCH_RESULTS = 50;
+
+interface SearchCacheEntry {
+  expiresAt: number;
+  results: SearchResult[];
+}
+
+export class SearchCache {
+  private readonly entries = new Map<string, SearchCacheEntry>();
+
+  constructor(
+    private readonly maxEntries = SEARCH_CACHE_MAX_ENTRIES,
+    private readonly ttlMs = SEARCH_CACHE_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get(query: string, provider: SearchProviderName): SearchResult[] | undefined {
+    const key = this.key(query, provider);
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.results.map((result) => ({ ...result }));
+  }
+
+  set(query: string, provider: SearchProviderName, results: SearchResult[]): void {
+    const key = this.key(query, provider);
+    this.entries.delete(key);
+    this.entries.set(key, {
+      expiresAt: this.now() + this.ttlMs,
+      results: results.map((result) => ({ ...result })),
+    });
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.entries.delete(oldestKey);
+    }
+  }
+
+  private key(query: string, provider: SearchProviderName): string {
+    const normalizedQuery = query.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+    return `${provider}:${normalizedQuery}`;
+  }
+}
+
 function normalizeResultUrl(raw: string): string | undefined {
   try {
     const url = new URL(raw);
@@ -31,14 +82,19 @@ function searchUrl(provider: SearchProviderName, query: string, searxngUrl?: str
 }
 
 export class SearchService {
-  constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {}
+  constructor(
+    private readonly manager: BrowserManager,
+    private readonly logger: Logger,
+    private readonly cache = new SearchCache(),
+  ) {}
 
   async search(options: { query: string; provider?: SearchProviderName; maxResults?: number; fetchTop?: number }): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
+    const maxResults = Math.min(options.maxResults ?? 10, MAX_SEARCH_RESULTS);
     const errors: string[] = [];
     for (const provider of providers) {
       try {
-        const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50));
+        const results = await this.getSearchResults(options.query, provider, maxResults);
         if (results.length === 0) throw new Error('Provider returned no recognizable results');
         const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = { query: options.query, provider, results };
         if ((options.fetchTop ?? 0) > 0) {
@@ -52,6 +108,18 @@ export class SearchService {
       }
     }
     throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+  }
+
+  private async getSearchResults(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
+    const cached = this.cache.get(query, provider);
+    if (cached) {
+      this.logger.debug('Search cache hit', { provider, query });
+      return cached.slice(0, maxResults);
+    }
+    this.logger.debug('Search cache miss', { provider, query });
+    const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
+    if (results.length > 0) this.cache.set(query, provider, results);
+    return results.slice(0, maxResults);
   }
 
   private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
