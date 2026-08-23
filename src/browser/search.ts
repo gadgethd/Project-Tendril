@@ -2,6 +2,52 @@ import { TendrilError } from '../errors.js';
 import type { EvidenceChunk, SearchProviderName, SearchResult } from '../types.js';
 import type { Logger } from '../util.js';
 import type { BrowserManager } from './manager.js';
+import type { TendrilSession } from './session.js';
+
+interface ParsedSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  return typeof record[key] === 'string' ? record[key].trim() : '';
+}
+
+function parseDuckDuckGoResponse(text: string): ParsedSearchResult[] {
+  const payload: unknown = JSON.parse(text);
+  if (!isRecord(payload)) throw new Error('DuckDuckGo API returned an invalid response');
+
+  const parsed: ParsedSearchResult[] = [];
+  const abstract = stringField(payload, 'AbstractText');
+  const abstractUrl = stringField(payload, 'AbstractURL');
+  if (abstract && abstractUrl) {
+    parsed.push({
+      title: stringField(payload, 'Heading') || abstract.slice(0, 120),
+      url: abstractUrl,
+      snippet: abstract,
+    });
+  }
+
+  const collectTopics = (topics: unknown): void => {
+    if (!Array.isArray(topics)) return;
+    for (const topic of topics) {
+      if (!isRecord(topic)) continue;
+      collectTopics(topic.Topics);
+      const snippet = stringField(topic, 'Text');
+      const url = stringField(topic, 'FirstURL');
+      if (!snippet || !url) continue;
+      parsed.push({ title: snippet.split(' - ', 1)[0] ?? snippet, url, snippet });
+    }
+  };
+  collectTopics(payload.Results);
+  collectTopics(payload.RelatedTopics);
+  return parsed;
+}
 
 function normalizeResultUrl(raw: string): string | undefined {
   try {
@@ -57,36 +103,33 @@ export class SearchService {
   private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
     const session = await this.manager.create();
     try {
-      await session.navigate({ url: searchUrl(provider, query, this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
-      await session.wait({ delayMs: 500 });
-      const pageInfo = (await session.listPages()).find((page) => page.selected);
-      if (!pageInfo) return [];
-      const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
-      let parsed: Array<{ title: string; url: string; snippet: string }> = [];
-      if (provider === 'duckduckgo') {
-        parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
-          snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else if (provider === 'bing') {
-        parsed = await page.locator('item').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: node.querySelector('link')?.textContent?.trim() ?? '',
-          snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else if (provider === 'searxng') {
-        parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
-          snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else {
-        parsed = await page.locator('a:has(h3)').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node as HTMLAnchorElement).href,
-          snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
-        })));
+      let parsed: ParsedSearchResult[];
+      if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
+      else {
+        await session.navigate({ url: searchUrl(provider, query, this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        await session.wait({ delayMs: 500 });
+        const pageInfo = (await session.listPages()).find((page) => page.selected);
+        if (!pageInfo) return [];
+        const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
+        if (provider === 'bing') {
+          parsed = await page.locator('item').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: node.querySelector('link')?.textContent?.trim() ?? '',
+            snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          })));
+        } else if (provider === 'searxng') {
+          parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
+            snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          })));
+        } else {
+          parsed = await page.locator('a:has(h3)').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: (node as HTMLAnchorElement).href,
+            snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
+          })));
+        }
       }
       const seen = new Set<string>();
       const results: SearchResult[] = [];
@@ -100,6 +143,33 @@ export class SearchService {
       return results;
     } finally {
       await this.manager.close(session.id);
+    }
+  }
+
+  private async searchDuckDuckGo(session: TendrilSession, query: string): Promise<ParsedSearchResult[]> {
+    const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    try {
+      const response = await session.fetchText(apiUrl);
+      if (response.status === null || response.status < 200 || response.status >= 300) {
+        throw new Error(`DuckDuckGo API returned HTTP ${response.status ?? 'unknown'}`);
+      }
+      const parsed = parseDuckDuckGoResponse(response.text);
+      if (parsed.length === 0) throw new Error('DuckDuckGo API returned no recognizable results');
+      return parsed;
+    } catch (error) {
+      this.logger.warn('DuckDuckGo API failed; falling back to HTML search', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await session.navigate({ url: searchUrl('duckduckgo', query), waitUntil: 'domcontentloaded' });
+      await session.wait({ delayMs: 500 });
+      const pageInfo = (await session.listPages()).find((page) => page.selected);
+      if (!pageInfo) return [];
+      const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
+      return page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
+        title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+        url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
+        snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      })));
     }
   }
 
