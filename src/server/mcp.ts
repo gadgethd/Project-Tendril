@@ -129,7 +129,7 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
     inputSchema: {
       sessionId,
       action: z.enum(['click', 'double_click', 'hover', 'focus', 'fill', 'type', 'select', 'check', 'uncheck', 'press', 'scroll', 'drag', 'upload']),
-      ref: z.string().optional(), targetRef: z.string().optional(), text: z.string().optional(),
+      ref: z.string().optional(), targetRef: z.string().optional(), text: z.string().optional(), value: z.string().optional(),
       values: z.array(z.string()).optional(), key: z.string().optional(),
       deltaX: z.number().optional(), deltaY: z.number().optional(), files: z.array(z.string()).optional(), submit: z.boolean().optional(),
     },

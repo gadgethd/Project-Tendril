@@ -435,7 +435,7 @@ export class TendrilSession {
     return { page, frame, target };
   }
 
-  async act(options: { action: BrowserAction; ref?: string; targetRef?: string; text?: string; values?: string[]; key?: string; deltaX?: number; deltaY?: number; files?: string[]; submit?: boolean }): Promise<{ url: string; snapshot?: SnapshotResult }> {
+  async act(options: { action: BrowserAction; ref?: string; targetRef?: string; text?: string; value?: string; values?: string[]; key?: string; deltaX?: number; deltaY?: number; files?: string[]; submit?: boolean }): Promise<{ url: string; snapshot?: SnapshotResult }> {
     this.touch();
     if (options.action === 'press' && !options.ref) {
       const page = this.currentPage();
@@ -452,8 +452,14 @@ export class TendrilSession {
       case 'hover': await locator.hover(); break;
       case 'focus': await locator.focus(); break;
       case 'fill': await locator.fill(options.text ?? ''); break;
-      case 'type': await locator.pressSequentially(options.text ?? ''); break;
-      case 'select': await locator.selectOption(options.values ?? []); break;
+      case 'type':
+        await locator.fill('');
+        await locator.pressSequentially(options.text ?? '');
+        break;
+      case 'select':
+        if (options.value !== undefined) await locator.selectOption({ label: options.value });
+        else await locator.selectOption(options.values ?? []);
+        break;
       case 'check': await locator.check(); break;
       case 'uncheck': await locator.uncheck(); break;
       case 'press': await locator.press(options.key ?? 'Enter'); break;
