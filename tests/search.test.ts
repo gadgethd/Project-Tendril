@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SearchCache, SearchService } from '../src/browser/search.js';
+import { rankResults, SearchCache, SearchService } from '../src/browser/search.js';
 import type { BrowserManager } from '../src/browser/manager.js';
 import type { SearchProviderName, SearchResult } from '../src/types.js';
 import { Logger } from '../src/util.js';
@@ -31,6 +31,35 @@ describe('SearchCache', () => {
     expect(cache.get('first', 'bing')).toEqual([result('first')]);
     expect(cache.get('second', 'bing')).toBeUndefined();
     expect(cache.get('third', 'bing')).toEqual([result('third')]);
+  });
+});
+
+describe('rankResults', () => {
+  it('weights title matches above snippets and authoritative URLs', () => {
+    const ranked = rankResults([
+      { ...result('Original first'), rank: 1, url: 'https://example.com/first', snippet: 'No relevant terms' },
+      { ...result('Browser automation handbook'), rank: 4, url: 'https://example.com/title', snippet: '' },
+      { ...result('Snippet match'), rank: 3, url: 'https://example.com/snippet', snippet: 'A browser automation guide' },
+      { ...result('Authoritative reference'), rank: 2, url: 'https://docs.github.com/reference', snippet: '' },
+    ], 'browser automation');
+
+    expect(ranked.map((item) => item.title)).toEqual([
+      'Browser automation handbook',
+      'Snippet match',
+      'Authoritative reference',
+      'Original first',
+    ]);
+    expect(ranked.map((item) => item.rank)).toEqual([1, 2, 3, 4]);
+    expect(ranked[0]!.score).toBeGreaterThan(ranked[1]!.score ?? 0);
+  });
+
+  it('uses original provider rank to break equal scores', () => {
+    const ranked = rankResults([
+      { ...result('Second'), rank: 2, snippet: '' },
+      { ...result('First'), rank: 1, snippet: '' },
+    ], 'unmatched query');
+
+    expect(ranked.map((item) => item.title)).toEqual(['First', 'Second']);
   });
 });
 

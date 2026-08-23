@@ -6,6 +6,26 @@ import type { BrowserManager } from './manager.js';
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const SEARCH_CACHE_MAX_ENTRIES = 100;
 const MAX_SEARCH_RESULTS = 50;
+const TITLE_TERM_WEIGHT = 6;
+const TITLE_PHRASE_BONUS = 10;
+const SNIPPET_TERM_WEIGHT = 2;
+const SNIPPET_PHRASE_BONUS = 3;
+const AUTHORITY_BONUS = 4;
+
+const AUTHORITY_DOMAINS = [
+  'apnews.com',
+  'bbc.com',
+  'developer.mozilla.org',
+  'github.com',
+  'ietf.org',
+  'nodejs.org',
+  'npmjs.com',
+  'reuters.com',
+  'stackoverflow.com',
+  'typescriptlang.org',
+  'w3.org',
+  'wikipedia.org',
+] as const;
 
 interface SearchCacheEntry {
   expiresAt: number;
@@ -66,6 +86,51 @@ export class SearchCache {
     const normalizedQuery = query.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
     return `${provider}:${normalizedQuery}`;
   }
+}
+
+function normalizeSearchText(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function authorityScore(rawUrl: string): number {
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/\.$/, '');
+    const knownDomain = AUTHORITY_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+    const publicInstitution = /\.(?:gov|edu)$/.test(hostname) || hostname.endsWith('.gov.uk') || hostname.endsWith('.ac.uk');
+    return knownDomain || publicInstitution ? AUTHORITY_BONUS : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function relevanceScore(result: SearchResult, query: string): number {
+  const normalizedQuery = normalizeSearchText(query);
+  const terms = [...new Set(normalizedQuery.split(' ').filter(Boolean))];
+  const title = normalizeSearchText(result.title);
+  const snippet = normalizeSearchText(result.snippet);
+  const titleTerms = new Set(title.split(' ').filter(Boolean));
+  const snippetTerms = new Set(snippet.split(' ').filter(Boolean));
+  const titleMatches = terms.filter((term) => titleTerms.has(term)).length;
+  const snippetMatches = terms.filter((term) => snippetTerms.has(term)).length;
+  const titlePhrase = normalizedQuery.length > 0 && title.includes(normalizedQuery) ? TITLE_PHRASE_BONUS : 0;
+  const snippetPhrase = normalizedQuery.length > 0 && snippet.includes(normalizedQuery) ? SNIPPET_PHRASE_BONUS : 0;
+  return (titleMatches * TITLE_TERM_WEIGHT)
+    + titlePhrase
+    + (snippetMatches * SNIPPET_TERM_WEIGHT)
+    + snippetPhrase
+    + authorityScore(result.url);
+}
+
+export function rankResults(results: SearchResult[], query: string): SearchResult[] {
+  return results
+    .map((result, originalIndex) => ({
+      originalIndex,
+      result: { ...result, score: relevanceScore(result, query) },
+    }))
+    .sort((left, right) => (right.result.score - left.result.score)
+      || (left.result.rank - right.result.rank)
+      || (left.originalIndex - right.originalIndex))
+    .map(({ result }, index) => ({ ...result, rank: index + 1 }));
 }
 
 function normalizeResultUrl(raw: string): string | undefined {
@@ -172,8 +237,9 @@ export class SearchService {
     }
     this.logger.debug('Search cache miss', { provider, query });
     const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
-    if (results.length > 0) this.cache.set(query, provider, results);
-    return results.slice(0, maxResults);
+    const rankedResults = rankResults(results, query);
+    if (rankedResults.length > 0) this.cache.set(query, provider, rankedResults);
+    return rankedResults.slice(0, maxResults);
   }
 
   private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {

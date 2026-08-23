@@ -88,6 +88,7 @@ export interface SnapshotResult {
 
 export interface SearchResult {
   rank: number;
+  score?: number;
   title: string;
   url: string;
   snippet: string;
