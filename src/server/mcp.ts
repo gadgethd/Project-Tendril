@@ -60,9 +60,9 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
 
   server.registerTool('browser_session', {
     title: 'Browser session lifecycle',
-    description: 'Create, list, inspect, reset, or close isolated Chromium sessions. Sessions are ephemeral unless a named profile is supplied.',
+    description: 'Create, reconnect, list, inspect, reset, or close isolated Chromium sessions. Sessions are ephemeral unless a named profile is supplied.',
     inputSchema: {
-      action: z.enum(['create', 'list', 'inspect', 'reset', 'close']),
+      action: z.enum(['create', 'reconnect', 'list', 'inspect', 'reset', 'close']),
       sessionId: z.string().optional(),
       profile: z.string().optional(),
       headless: z.boolean().optional(),
@@ -74,6 +74,10 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, wrap(async (input) => {
     if (input.action === 'create') return result(await (await manager.create(input)).info());
+    if (input.action === 'reconnect') {
+      if (!input.profile) throw new Error('profile is required');
+      return result(await manager.reconnect(input.profile).info());
+    }
     if (input.action === 'list') return result({ sessions: await manager.list() });
     if (!input.sessionId) throw new Error('sessionId is required');
     if (input.action === 'inspect') return result(await manager.get(input.sessionId).info());
