@@ -527,8 +527,9 @@ export class TendrilSession {
       data: buffer.toString('base64'),
     };
     if (options.savePath) {
-      result.savePath = path.resolve(options.savePath);
-      await writeFile(result.savePath, buffer);
+      const resolved = await assertPathWithinRoots(options.savePath, this.config.workspaceRoots);
+      result.savePath = resolved;
+      await writeFile(resolved, buffer);
     }
     return result;
   }
