@@ -57,6 +57,71 @@ function parseDuckDuckGoResponse(text: string): ParsedSearchResult[] {
   return parsed;
 }
 
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 100;
+const MAX_SEARCH_RESULTS = 50;
+
+interface SearchCacheEntry {
+  expiresAt: number;
+  results: SearchResult[];
+}
+
+interface ProviderSearchSuccess {
+  ok: true;
+  provider: SearchProviderName;
+  results: SearchResult[];
+}
+
+interface ProviderSearchFailure {
+  ok: false;
+  provider: SearchProviderName;
+  error: string;
+}
+
+type ProviderSearchAttempt = ProviderSearchSuccess | ProviderSearchFailure;
+
+export class SearchCache {
+  private readonly entries = new Map<string, SearchCacheEntry>();
+
+  constructor(
+    private readonly maxEntries = SEARCH_CACHE_MAX_ENTRIES,
+    private readonly ttlMs = SEARCH_CACHE_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get(query: string, provider: SearchProviderName): SearchResult[] | undefined {
+    const key = this.key(query, provider);
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.results.map((result) => ({ ...result }));
+  }
+
+  set(query: string, provider: SearchProviderName, results: SearchResult[]): void {
+    const key = this.key(query, provider);
+    this.entries.delete(key);
+    this.entries.set(key, {
+      expiresAt: this.now() + this.ttlMs,
+      results: results.map((result) => ({ ...result })),
+    });
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.entries.delete(oldestKey);
+    }
+  }
+
+  private key(query: string, provider: SearchProviderName): string {
+    const normalizedQuery = query.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+    return `${provider}:${normalizedQuery}`;
+  }
+}
+
 function normalizeResultUrl(raw: string): string | undefined {
   try {
     const url = new URL(raw);
@@ -87,7 +152,11 @@ function searchUrl(provider: SearchProviderName, query: string, searxngUrl?: str
 export class SearchService {
   private readonly googleConfigured: boolean;
 
-  constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {
+  constructor(
+    private readonly manager: BrowserManager,
+    private readonly logger: Logger,
+    private readonly cache = new SearchCache(),
+  ) {
     this.googleConfigured = Boolean(manager.config.googleSearchApiKey && manager.config.googleSearchCx);
     if (!this.googleConfigured) {
       this.logger.warn('Google search provider disabled; GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are required');
@@ -96,27 +165,76 @@ export class SearchService {
 
   async search(options: SearchOptions): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
+    const maxResults = Math.min(options.maxResults ?? 10, MAX_SEARCH_RESULTS);
     const errors: string[] = [];
-    for (const provider of providers) {
-      if (provider === 'google' && !this.googleConfigured) {
-        errors.push('google: provider disabled because GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are not configured');
-        continue;
-      }
-      try {
-        const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50), options.searxngUrl);
-        if (results.length === 0) throw new Error('Provider returned no recognizable results');
-        const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = { query: options.query, provider, results };
-        if ((options.fetchTop ?? 0) > 0) {
-          output.evidence = await this.fetchEvidence(results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
+    let success: ProviderSearchSuccess | undefined;
+    let remainingProviders = providers;
+
+    if (!options.provider && providers.length >= 2) {
+      const pending = new Map(
+        providers.slice(0, 2).map((provider, index) => [
+          index,
+          this.tryProvider(options.query, provider, maxResults).then((attempt) => ({ ...attempt, index })),
+        ]),
+      );
+      while (pending.size > 0) {
+        const attempt = await Promise.race(pending.values());
+        pending.delete(attempt.index);
+        if (attempt.ok) {
+          success = attempt;
+          break;
         }
-        return output;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${provider}: ${message}`);
-        this.logger.warn('Search provider failed', { provider, error: message });
+        errors.push(`${attempt.provider}: ${attempt.error}`);
+      }
+      remainingProviders = providers.slice(2);
+    }
+
+    for (const provider of remainingProviders) {
+      if (success) break;
+      const attempt = await this.tryProvider(options.query, provider, maxResults);
+      if (attempt.ok) {
+        success = attempt;
+      } else {
+        errors.push(`${attempt.provider}: ${attempt.error}`);
       }
     }
-    throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+
+    if (!success) {
+      throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+    }
+    const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = {
+      query: options.query,
+      provider: success.provider,
+      results: success.results,
+    };
+    if ((options.fetchTop ?? 0) > 0) {
+      output.evidence = await this.fetchEvidence(success.results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
+    }
+    return output;
+  }
+
+  private async tryProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<ProviderSearchAttempt> {
+    try {
+      const results = await this.getSearchResults(query, provider, maxResults);
+      if (results.length === 0) throw new Error('Provider returned no recognizable results');
+      return { ok: true, provider, results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Search provider failed', { provider, error: message });
+      return { ok: false, provider, error: message };
+    }
+  }
+
+  private async getSearchResults(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
+    const cached = this.cache.get(query, provider);
+    if (cached) {
+      this.logger.debug('Search cache hit', { provider, query });
+      return cached.slice(0, maxResults);
+    }
+    this.logger.debug('Search cache miss', { provider, query });
+    const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
+    if (results.length > 0) this.cache.set(query, provider, results);
+    return results.slice(0, maxResults);
   }
 
   private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number, searxngUrl?: string): Promise<SearchResult[]> {
