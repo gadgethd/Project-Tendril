@@ -20,6 +20,8 @@ export interface TendrilConfig {
   workspaceRoots: string[];
   searchProviders: SearchProviderName[];
   searxngUrl?: string;
+  googleSearchApiKey?: string;
+  googleSearchCx?: string;
   dataDir: string;
   runtimeDir: string;
   token?: string;
@@ -48,6 +50,21 @@ export interface SessionInfo {
   pages: PageSummary[];
   processId?: number;
   cdpUrl?: string;
+}
+
+export interface BrowserCaptureOptions {
+  pageId?: string;
+  format?: 'png' | 'jpeg' | 'pdf';
+  fullPage?: boolean;
+  ref?: string;
+  quality?: number;
+  savePath?: string;
+}
+
+export interface BrowserCaptureResult {
+  mimeType: string;
+  data: string;
+  savePath?: string;
 }
 
 export interface PageSummary {

@@ -72,7 +72,9 @@ export async function loadConfig(options: { configPath?: string; overrides?: Par
   set('blockedHosts', envList(process.env.TENDRIL_BLOCKED_HOSTS));
   set('workspaceRoots', envList(process.env.TENDRIL_WORKSPACE_ROOTS));
   set('searchProviders', envList(process.env.TENDRIL_SEARCH_PROVIDERS) as SearchProviderName[] | undefined);
-  set('searxngUrl', process.env.TENDRIL_SEARXNG_URL);
+  set('searxngUrl', process.env.TENDRIL_SEARXNG_URL ?? process.env.SEARXNG_URL);
+  set('googleSearchApiKey', process.env.GOOGLE_SEARCH_API_KEY);
+  set('googleSearchCx', process.env.GOOGLE_SEARCH_CX);
   set('dataDir', process.env.TENDRIL_DATA_DIR);
   set('runtimeDir', process.env.TENDRIL_RUNTIME_DIR);
   set('token', process.env.TENDRIL_TOKEN);

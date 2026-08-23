@@ -2,6 +2,125 @@ import { TendrilError } from '../errors.js';
 import type { EvidenceChunk, SearchProviderName, SearchResult } from '../types.js';
 import type { Logger } from '../util.js';
 import type { BrowserManager } from './manager.js';
+import type { TendrilSession } from './session.js';
+
+interface ParsedSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+interface SearchOptions {
+  query: string;
+  provider?: SearchProviderName;
+  maxResults?: number;
+  fetchTop?: number;
+  searxngUrl?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  return typeof record[key] === 'string' ? record[key].trim() : '';
+}
+
+function parseDuckDuckGoResponse(text: string): ParsedSearchResult[] {
+  const payload: unknown = JSON.parse(text);
+  if (!isRecord(payload)) throw new Error('DuckDuckGo API returned an invalid response');
+
+  const parsed: ParsedSearchResult[] = [];
+  const abstract = stringField(payload, 'AbstractText');
+  const abstractUrl = stringField(payload, 'AbstractURL');
+  if (abstract && abstractUrl) {
+    parsed.push({
+      title: stringField(payload, 'Heading') || abstract.slice(0, 120),
+      url: abstractUrl,
+      snippet: abstract,
+    });
+  }
+
+  const collectTopics = (topics: unknown): void => {
+    if (!Array.isArray(topics)) return;
+    for (const topic of topics) {
+      if (!isRecord(topic)) continue;
+      collectTopics(topic.Topics);
+      const snippet = stringField(topic, 'Text');
+      const url = stringField(topic, 'FirstURL');
+      if (!snippet || !url) continue;
+      parsed.push({ title: snippet.split(' - ', 1)[0] ?? snippet, url, snippet });
+    }
+  };
+  collectTopics(payload.Results);
+  collectTopics(payload.RelatedTopics);
+  return parsed;
+}
+
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 100;
+const MAX_SEARCH_RESULTS = 50;
+
+interface SearchCacheEntry {
+  expiresAt: number;
+  results: SearchResult[];
+}
+
+interface ProviderSearchSuccess {
+  ok: true;
+  provider: SearchProviderName;
+  results: SearchResult[];
+}
+
+interface ProviderSearchFailure {
+  ok: false;
+  provider: SearchProviderName;
+  error: string;
+}
+
+type ProviderSearchAttempt = ProviderSearchSuccess | ProviderSearchFailure;
+
+export class SearchCache {
+  private readonly entries = new Map<string, SearchCacheEntry>();
+
+  constructor(
+    private readonly maxEntries = SEARCH_CACHE_MAX_ENTRIES,
+    private readonly ttlMs = SEARCH_CACHE_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get(query: string, provider: SearchProviderName): SearchResult[] | undefined {
+    const key = this.key(query, provider);
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.results.map((result) => ({ ...result }));
+  }
+
+  set(query: string, provider: SearchProviderName, results: SearchResult[]): void {
+    const key = this.key(query, provider);
+    this.entries.delete(key);
+    this.entries.set(key, {
+      expiresAt: this.now() + this.ttlMs,
+      results: results.map((result) => ({ ...result })),
+    });
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.entries.delete(oldestKey);
+    }
+  }
+
+  private key(query: string, provider: SearchProviderName): string {
+    const normalizedQuery = query.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+    return `${provider}:${normalizedQuery}`;
+  }
+}
 
 function normalizeResultUrl(raw: string): string | undefined {
   try {
@@ -25,68 +144,130 @@ function searchUrl(provider: SearchProviderName, query: string, searxngUrl?: str
   // Bing's RSS representation is still rendered by Chromium, is compact, and is substantially
   // more stable for an agent than presentation-layer CSS selectors.
   if (provider === 'bing') return `https://www.bing.com/search?format=rss&q=${encoded}`;
-  if (provider === 'google') return `https://www.google.com/search?q=${encoded}`;
+  if (provider === 'google') throw new TendrilError('CONFIGURATION_ERROR', 'Google search must use the Custom Search JSON API');
   if (!searxngUrl) throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl is required for the SearXNG provider');
   return `${searxngUrl.replace(/\/$/, '')}/search?q=${encoded}`;
 }
 
 export class SearchService {
-  constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {}
+  private readonly googleConfigured: boolean;
 
-  async search(options: { query: string; provider?: SearchProviderName; maxResults?: number; fetchTop?: number }): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
-    const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
-    const errors: string[] = [];
-    for (const provider of providers) {
-      try {
-        const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50));
-        if (results.length === 0) throw new Error('Provider returned no recognizable results');
-        const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = { query: options.query, provider, results };
-        if ((options.fetchTop ?? 0) > 0) {
-          output.evidence = await this.fetchEvidence(results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
-        }
-        return output;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${provider}: ${message}`);
-        this.logger.warn('Search provider failed', { provider, error: message });
-      }
+  constructor(
+    private readonly manager: BrowserManager,
+    private readonly logger: Logger,
+    private readonly cache = new SearchCache(),
+  ) {
+    this.googleConfigured = Boolean(manager.config.googleSearchApiKey && manager.config.googleSearchCx);
+    if (!this.googleConfigured) {
+      this.logger.warn('Google search provider disabled; GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are required');
     }
-    throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
   }
 
-  private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
+  async search(options: SearchOptions): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
+    const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
+    const maxResults = Math.min(options.maxResults ?? 10, MAX_SEARCH_RESULTS);
+    const errors: string[] = [];
+    let success: ProviderSearchSuccess | undefined;
+    let remainingProviders = providers;
+
+    if (!options.provider && providers.length >= 2) {
+      const pending = new Map(
+        providers.slice(0, 2).map((provider, index) => [
+          index,
+          this.tryProvider(options.query, provider, maxResults).then((attempt) => ({ ...attempt, index })),
+        ]),
+      );
+      while (pending.size > 0) {
+        const attempt = await Promise.race(pending.values());
+        pending.delete(attempt.index);
+        if (attempt.ok) {
+          success = attempt;
+          break;
+        }
+        errors.push(`${attempt.provider}: ${attempt.error}`);
+      }
+      remainingProviders = providers.slice(2);
+    }
+
+    for (const provider of remainingProviders) {
+      if (success) break;
+      const attempt = await this.tryProvider(options.query, provider, maxResults);
+      if (attempt.ok) {
+        success = attempt;
+      } else {
+        errors.push(`${attempt.provider}: ${attempt.error}`);
+      }
+    }
+
+    if (!success) {
+      throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+    }
+    const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = {
+      query: options.query,
+      provider: success.provider,
+      results: success.results,
+    };
+    if ((options.fetchTop ?? 0) > 0) {
+      output.evidence = await this.fetchEvidence(success.results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
+    }
+    return output;
+  }
+
+  private async tryProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<ProviderSearchAttempt> {
+    try {
+      const results = await this.getSearchResults(query, provider, maxResults);
+      if (results.length === 0) throw new Error('Provider returned no recognizable results');
+      return { ok: true, provider, results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Search provider failed', { provider, error: message });
+      return { ok: false, provider, error: message };
+    }
+  }
+
+  private async getSearchResults(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
+    const cached = this.cache.get(query, provider);
+    if (cached) {
+      this.logger.debug('Search cache hit', { provider, query });
+      return cached.slice(0, maxResults);
+    }
+    this.logger.debug('Search cache miss', { provider, query });
+    const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
+    if (results.length > 0) this.cache.set(query, provider, results);
+    return results.slice(0, maxResults);
+  }
+
+  private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number, searxngUrl?: string): Promise<SearchResult[]> {
     const session = await this.manager.create();
     try {
-      await session.navigate({ url: searchUrl(provider, query, this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
-      await session.wait({ delayMs: 500 });
-      const pageInfo = (await session.listPages()).find((page) => page.selected);
-      if (!pageInfo) return [];
-      const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
-      let parsed: Array<{ title: string; url: string; snippet: string }> = [];
-      if (provider === 'duckduckgo') {
-        parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
-          snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else if (provider === 'bing') {
-        parsed = await page.locator('item').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: node.querySelector('link')?.textContent?.trim() ?? '',
-          snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else if (provider === 'searxng') {
-        parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
-          snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        })));
-      } else {
-        parsed = await page.locator('a:has(h3)').evaluateAll((nodes) => nodes.map((node) => ({
-          title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          url: (node as HTMLAnchorElement).href,
-          snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
-        })));
+      let parsed: ParsedSearchResult[];
+      if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
+      else if (provider === 'google') parsed = await this.searchGoogle(session, query, maxResults);
+      else {
+        await session.navigate({ url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        await session.wait({ delayMs: 500 });
+        const pageInfo = (await session.listPages()).find((page) => page.selected);
+        if (!pageInfo) return [];
+        const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
+        if (provider === 'bing') {
+          parsed = await page.locator('item').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: node.querySelector('link')?.textContent?.trim() ?? '',
+            snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          })));
+        } else if (provider === 'searxng') {
+          parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
+            snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          })));
+        } else {
+          parsed = await page.locator('a:has(h3)').evaluateAll((nodes) => nodes.map((node) => ({
+            title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            url: (node as HTMLAnchorElement).href,
+            snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
+          })));
+        }
       }
       const seen = new Set<string>();
       const results: SearchResult[] = [];
@@ -101,6 +282,70 @@ export class SearchService {
     } finally {
       await this.manager.close(session.id);
     }
+  }
+
+  private async searchDuckDuckGo(session: TendrilSession, query: string): Promise<ParsedSearchResult[]> {
+    const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    try {
+      const response = await session.fetchText(apiUrl);
+      if (response.status === null || response.status < 200 || response.status >= 300) {
+        throw new Error(`DuckDuckGo API returned HTTP ${response.status ?? 'unknown'}`);
+      }
+      const parsed = parseDuckDuckGoResponse(response.text);
+      if (parsed.length === 0) throw new Error('DuckDuckGo API returned no recognizable results');
+      return parsed;
+    } catch (error) {
+      this.logger.warn('DuckDuckGo API failed; falling back to HTML search', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await session.navigate({ url: searchUrl('duckduckgo', query), waitUntil: 'domcontentloaded' });
+      await session.wait({ delayMs: 500 });
+      const pageInfo = (await session.listPages()).find((page) => page.selected);
+      if (!pageInfo) return [];
+      const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
+      return page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
+        title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+        url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
+        snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      })));
+    }
+  }
+
+  private async searchGoogle(session: TendrilSession, query: string, maxResults: number): Promise<ParsedSearchResult[]> {
+    const key = this.manager.config.googleSearchApiKey;
+    const cx = this.manager.config.googleSearchCx;
+    if (!key || !cx) throw new TendrilError('CONFIGURATION_ERROR', 'Google search provider is not configured');
+
+    const parsed: ParsedSearchResult[] = [];
+    while (parsed.length < maxResults) {
+      const count = Math.min(maxResults - parsed.length, 10);
+      const url = new URL('https://www.googleapis.com/customsearch/v1');
+      url.searchParams.set('key', key);
+      url.searchParams.set('cx', cx);
+      url.searchParams.set('q', query);
+      url.searchParams.set('num', String(count));
+      url.searchParams.set('start', String(parsed.length + 1));
+      const response = await session.fetchText(url.toString());
+      let payload: unknown;
+      try { payload = JSON.parse(response.text) as unknown; }
+      catch (error) { throw new Error('Google Custom Search API returned invalid JSON', { cause: error }); }
+      if (!isRecord(payload)) throw new Error('Google Custom Search API returned an invalid response');
+      if (response.status === null || response.status < 200 || response.status >= 300) {
+        const apiError = isRecord(payload.error) ? stringField(payload.error, 'message') : '';
+        throw new Error(apiError || `Google Custom Search API returned HTTP ${response.status ?? 'unknown'}`);
+      }
+      if (!Array.isArray(payload.items)) break;
+      const previousLength = parsed.length;
+      for (const item of payload.items) {
+        if (!isRecord(item)) continue;
+        const title = stringField(item, 'title');
+        const itemUrl = stringField(item, 'link');
+        if (!title || !itemUrl) continue;
+        parsed.push({ title, url: itemUrl, snippet: stringField(item, 'snippet') });
+      }
+      if (parsed.length - previousLength < count) break;
+    }
+    return parsed;
   }
 
   async research(options: { queries: string[]; maxResultsPerQuery?: number; maxSources?: number }): Promise<{ queries: string[]; sources: SearchResult[]; evidence: EvidenceChunk[] }> {
