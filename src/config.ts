@@ -73,6 +73,8 @@ export async function loadConfig(options: { configPath?: string; overrides?: Par
   set('workspaceRoots', envList(process.env.TENDRIL_WORKSPACE_ROOTS));
   set('searchProviders', envList(process.env.TENDRIL_SEARCH_PROVIDERS) as SearchProviderName[] | undefined);
   set('searxngUrl', process.env.TENDRIL_SEARXNG_URL);
+  set('googleSearchApiKey', process.env.GOOGLE_SEARCH_API_KEY);
+  set('googleSearchCx', process.env.GOOGLE_SEARCH_CX);
   set('dataDir', process.env.TENDRIL_DATA_DIR);
   set('runtimeDir', process.env.TENDRIL_RUNTIME_DIR);
   set('token', process.env.TENDRIL_TOKEN);

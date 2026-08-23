@@ -71,18 +71,29 @@ function searchUrl(provider: SearchProviderName, query: string, searxngUrl?: str
   // Bing's RSS representation is still rendered by Chromium, is compact, and is substantially
   // more stable for an agent than presentation-layer CSS selectors.
   if (provider === 'bing') return `https://www.bing.com/search?format=rss&q=${encoded}`;
-  if (provider === 'google') return `https://www.google.com/search?q=${encoded}`;
+  if (provider === 'google') throw new TendrilError('CONFIGURATION_ERROR', 'Google search must use the Custom Search JSON API');
   if (!searxngUrl) throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl is required for the SearXNG provider');
   return `${searxngUrl.replace(/\/$/, '')}/search?q=${encoded}`;
 }
 
 export class SearchService {
-  constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {}
+  private readonly googleConfigured: boolean;
+
+  constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {
+    this.googleConfigured = Boolean(manager.config.googleSearchApiKey && manager.config.googleSearchCx);
+    if (!this.googleConfigured) {
+      this.logger.warn('Google search provider disabled; GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are required');
+    }
+  }
 
   async search(options: { query: string; provider?: SearchProviderName; maxResults?: number; fetchTop?: number }): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
     const errors: string[] = [];
     for (const provider of providers) {
+      if (provider === 'google' && !this.googleConfigured) {
+        errors.push('google: provider disabled because GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are not configured');
+        continue;
+      }
       try {
         const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50));
         if (results.length === 0) throw new Error('Provider returned no recognizable results');
@@ -105,6 +116,7 @@ export class SearchService {
     try {
       let parsed: ParsedSearchResult[];
       if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
+      else if (provider === 'google') parsed = await this.searchGoogle(session, query, maxResults);
       else {
         await session.navigate({ url: searchUrl(provider, query, this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
         await session.wait({ delayMs: 500 });
@@ -171,6 +183,43 @@ export class SearchService {
         snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
       })));
     }
+  }
+
+  private async searchGoogle(session: TendrilSession, query: string, maxResults: number): Promise<ParsedSearchResult[]> {
+    const key = this.manager.config.googleSearchApiKey;
+    const cx = this.manager.config.googleSearchCx;
+    if (!key || !cx) throw new TendrilError('CONFIGURATION_ERROR', 'Google search provider is not configured');
+
+    const parsed: ParsedSearchResult[] = [];
+    while (parsed.length < maxResults) {
+      const count = Math.min(maxResults - parsed.length, 10);
+      const url = new URL('https://www.googleapis.com/customsearch/v1');
+      url.searchParams.set('key', key);
+      url.searchParams.set('cx', cx);
+      url.searchParams.set('q', query);
+      url.searchParams.set('num', String(count));
+      url.searchParams.set('start', String(parsed.length + 1));
+      const response = await session.fetchText(url.toString());
+      let payload: unknown;
+      try { payload = JSON.parse(response.text) as unknown; }
+      catch (error) { throw new Error('Google Custom Search API returned invalid JSON', { cause: error }); }
+      if (!isRecord(payload)) throw new Error('Google Custom Search API returned an invalid response');
+      if (response.status === null || response.status < 200 || response.status >= 300) {
+        const apiError = isRecord(payload.error) ? stringField(payload.error, 'message') : '';
+        throw new Error(apiError || `Google Custom Search API returned HTTP ${response.status ?? 'unknown'}`);
+      }
+      if (!Array.isArray(payload.items)) break;
+      const previousLength = parsed.length;
+      for (const item of payload.items) {
+        if (!isRecord(item)) continue;
+        const title = stringField(item, 'title');
+        const itemUrl = stringField(item, 'link');
+        if (!title || !itemUrl) continue;
+        parsed.push({ title, url: itemUrl, snippet: stringField(item, 'snippet') });
+      }
+      if (parsed.length - previousLength < count) break;
+    }
+    return parsed;
   }
 
   async research(options: { queries: string[]; maxResultsPerQuery?: number; maxSources?: number }): Promise<{ queries: string[]; sources: SearchResult[]; evidence: EvidenceChunk[] }> {

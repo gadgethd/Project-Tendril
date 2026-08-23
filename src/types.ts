@@ -20,6 +20,8 @@ export interface TendrilConfig {
   workspaceRoots: string[];
   searchProviders: SearchProviderName[];
   searxngUrl?: string;
+  googleSearchApiKey?: string;
+  googleSearchCx?: string;
   dataDir: string;
   runtimeDir: string;
   token?: string;
