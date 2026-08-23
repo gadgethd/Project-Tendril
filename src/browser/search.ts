@@ -12,6 +12,20 @@ interface SearchCacheEntry {
   results: SearchResult[];
 }
 
+interface ProviderSearchSuccess {
+  ok: true;
+  provider: SearchProviderName;
+  results: SearchResult[];
+}
+
+interface ProviderSearchFailure {
+  ok: false;
+  provider: SearchProviderName;
+  error: string;
+}
+
+type ProviderSearchAttempt = ProviderSearchSuccess | ProviderSearchFailure;
+
 export class SearchCache {
   private readonly entries = new Map<string, SearchCacheEntry>();
 
@@ -92,22 +106,62 @@ export class SearchService {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
     const maxResults = Math.min(options.maxResults ?? 10, MAX_SEARCH_RESULTS);
     const errors: string[] = [];
-    for (const provider of providers) {
-      try {
-        const results = await this.getSearchResults(options.query, provider, maxResults);
-        if (results.length === 0) throw new Error('Provider returned no recognizable results');
-        const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = { query: options.query, provider, results };
-        if ((options.fetchTop ?? 0) > 0) {
-          output.evidence = await this.fetchEvidence(results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
+    let success: ProviderSearchSuccess | undefined;
+    let remainingProviders = providers;
+
+    if (!options.provider && providers.length >= 2) {
+      const pending = new Map(
+        providers.slice(0, 2).map((provider, index) => [
+          index,
+          this.tryProvider(options.query, provider, maxResults).then((attempt) => ({ ...attempt, index })),
+        ]),
+      );
+      while (pending.size > 0) {
+        const attempt = await Promise.race(pending.values());
+        pending.delete(attempt.index);
+        if (attempt.ok) {
+          success = attempt;
+          break;
         }
-        return output;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${provider}: ${message}`);
-        this.logger.warn('Search provider failed', { provider, error: message });
+        errors.push(`${attempt.provider}: ${attempt.error}`);
+      }
+      remainingProviders = providers.slice(2);
+    }
+
+    for (const provider of remainingProviders) {
+      if (success) break;
+      const attempt = await this.tryProvider(options.query, provider, maxResults);
+      if (attempt.ok) {
+        success = attempt;
+      } else {
+        errors.push(`${attempt.provider}: ${attempt.error}`);
       }
     }
-    throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+
+    if (!success) {
+      throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
+    }
+    const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = {
+      query: options.query,
+      provider: success.provider,
+      results: success.results,
+    };
+    if ((options.fetchTop ?? 0) > 0) {
+      output.evidence = await this.fetchEvidence(success.results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
+    }
+    return output;
+  }
+
+  private async tryProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<ProviderSearchAttempt> {
+    try {
+      const results = await this.getSearchResults(query, provider, maxResults);
+      if (results.length === 0) throw new Error('Provider returned no recognizable results');
+      return { ok: true, provider, results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Search provider failed', { provider, error: message });
+      return { ok: false, provider, error: message };
+    }
   }
 
   private async getSearchResults(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
