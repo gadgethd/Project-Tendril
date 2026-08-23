@@ -7,6 +7,7 @@ import { TendrilSession } from './session.js';
 
 export class BrowserManager {
   private readonly sessions = new Map<SessionId, TendrilSession>();
+  private readonly profileSessions = new Map<string, TendrilSession>();
   private readonly profileLocks = new Map<string, SessionId>();
   private reapTimer?: NodeJS.Timeout;
 
@@ -20,11 +21,15 @@ export class BrowserManager {
   }
 
   async create(options: SessionCreateOptions = {}): Promise<TendrilSession> {
-    if (this.sessions.size >= this.config.maxSessions) {
-      throw new TendrilError('SESSION_LIMIT_REACHED', `Maximum of ${this.config.maxSessions} concurrent sessions reached`, { retryable: true });
-    }
     if (options.profile && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(options.profile)) {
       throw new TendrilError('CONFIGURATION_ERROR', 'Profile names must be 1-64 safe filename characters');
+    }
+    if (options.profile) {
+      const existing = this.profileSessions.get(options.profile);
+      if (existing) return existing;
+    }
+    if (this.sessions.size >= this.config.maxSessions) {
+      throw new TendrilError('SESSION_LIMIT_REACHED', `Maximum of ${this.config.maxSessions} concurrent sessions reached`, { retryable: true });
     }
     if (options.profile && this.profileLocks.has(options.profile)) {
       throw new TendrilError('PROFILE_IN_USE', `Profile is already active: ${options.profile}`, { retryable: true });
@@ -41,6 +46,7 @@ export class BrowserManager {
         config: this.config, logger: this.logger,
       });
       this.sessions.set(id, session);
+      if (options.profile) this.profileSessions.set(options.profile, session);
       return session;
     } catch (error) {
       if (options.profile) this.profileLocks.delete(options.profile);
@@ -55,6 +61,15 @@ export class BrowserManager {
     return session;
   }
 
+  reconnect(profile: string): TendrilSession {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(profile)) {
+      throw new TendrilError('CONFIGURATION_ERROR', 'Profile names must be 1-64 safe filename characters');
+    }
+    const session = this.profileSessions.get(profile);
+    if (!session) throw new TendrilError('SESSION_NOT_FOUND', `No active session for profile: ${profile}`);
+    return session;
+  }
+
   async list(cdpUrlFor?: (session: TendrilSession) => string): Promise<SessionInfo[]> {
     return Promise.all([...this.sessions.values()].map((session) => session.info(cdpUrlFor?.(session))));
   }
@@ -62,7 +77,10 @@ export class BrowserManager {
   async close(id: string): Promise<void> {
     const session = this.get(id);
     this.sessions.delete(id);
-    if (session.profile) this.profileLocks.delete(session.profile);
+    if (session.profile) {
+      this.profileSessions.delete(session.profile);
+      this.profileLocks.delete(session.profile);
+    }
     await session.close();
   }
 
@@ -70,6 +88,7 @@ export class BrowserManager {
     if (this.reapTimer) clearInterval(this.reapTimer);
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
+    this.profileSessions.clear();
     this.profileLocks.clear();
     await Promise.allSettled(sessions.map((session) => session.close()));
   }

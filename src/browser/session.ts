@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
@@ -6,8 +6,8 @@ import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
 import type {
-  ChallengeInfo, ConsoleEntry, ElementRef, NetworkEntry, PageId, PageSummary, SessionCreateOptions,
-  SessionId, SessionInfo, SnapshotResult, TendrilConfig,
+  BrowserCaptureOptions, BrowserCaptureResult, ChallengeInfo, ConsoleEntry, ElementRef, NetworkEntry, PageId,
+  PageSummary, SessionCreateOptions, SessionId, SessionInfo, SnapshotResult, TendrilConfig,
 } from '../types.js';
 import { assertPathWithinRoots, newId, type Logger } from '../util.js';
 import { launchChromium, type ChromiumProcess } from './chromium.js';
@@ -435,7 +435,7 @@ export class TendrilSession {
     return { page, frame, target };
   }
 
-  async act(options: { action: BrowserAction; ref?: string; targetRef?: string; text?: string; values?: string[]; key?: string; deltaX?: number; deltaY?: number; files?: string[]; submit?: boolean }): Promise<{ url: string; snapshot?: SnapshotResult }> {
+  async act(options: { action: BrowserAction; ref?: string; targetRef?: string; text?: string; value?: string; values?: string[]; key?: string; deltaX?: number; deltaY?: number; files?: string[]; submit?: boolean }): Promise<{ url: string; snapshot?: SnapshotResult }> {
     this.touch();
     if (options.action === 'press' && !options.ref) {
       const page = this.currentPage();
@@ -452,8 +452,14 @@ export class TendrilSession {
       case 'hover': await locator.hover(); break;
       case 'focus': await locator.focus(); break;
       case 'fill': await locator.fill(options.text ?? ''); break;
-      case 'type': await locator.pressSequentially(options.text ?? ''); break;
-      case 'select': await locator.selectOption(options.values ?? []); break;
+      case 'type':
+        await locator.fill('');
+        await locator.pressSequentially(options.text ?? '');
+        break;
+      case 'select':
+        if (options.value !== undefined) await locator.selectOption({ label: options.value });
+        else await locator.selectOption(options.values ?? []);
+        break;
       case 'check': await locator.check(); break;
       case 'uncheck': await locator.uncheck(); break;
       case 'press': await locator.press(options.key ?? 'Enter'); break;
@@ -504,18 +510,27 @@ export class TendrilSession {
     return extracted[format];
   }
 
-  async capture(options: { pageId?: string; format?: 'png' | 'jpeg' | 'pdf'; fullPage?: boolean; ref?: string; quality?: number }): Promise<{ mimeType: string; data: string }> {
+  async capture(options: BrowserCaptureOptions): Promise<BrowserCaptureResult> {
     const page = this.currentPage(options.pageId);
-    if (options.format === 'pdf') {
-      const data = await page.pdf({ printBackground: true });
-      return { mimeType: 'application/pdf', data: data.toString('base64') };
-    }
     const type = options.format ?? 'png';
-    const target = options.ref ? this.resolveTarget(options.ref) : undefined;
-    const buffer = target
-      ? await target.frame.locator(target.target.selector).first().screenshot({ type, quality: type === 'jpeg' ? options.quality ?? 80 : undefined })
-      : await page.screenshot({ type, fullPage: options.fullPage ?? false, quality: type === 'jpeg' ? options.quality ?? 80 : undefined });
-    return { mimeType: `image/${type}`, data: buffer.toString('base64') };
+    let buffer: Buffer;
+    if (type === 'pdf') {
+      buffer = await page.pdf({ printBackground: true });
+    } else {
+      const target = options.ref ? this.resolveTarget(options.ref) : undefined;
+      buffer = target
+        ? await target.frame.locator(target.target.selector).first().screenshot({ type, quality: type === 'jpeg' ? options.quality ?? 80 : undefined })
+        : await page.screenshot({ type, fullPage: options.fullPage ?? false, quality: type === 'jpeg' ? options.quality ?? 80 : undefined });
+    }
+    const result: BrowserCaptureResult = {
+      mimeType: type === 'pdf' ? 'application/pdf' : `image/${type}`,
+      data: buffer.toString('base64'),
+    };
+    if (options.savePath) {
+      result.savePath = path.resolve(options.savePath);
+      await writeFile(result.savePath, buffer);
+    }
+    return result;
   }
 
   async evaluate(expression: string, pageId?: string): Promise<unknown> {

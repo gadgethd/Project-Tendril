@@ -20,14 +20,19 @@ function result(value: unknown) {
   };
 }
 
-function imageResult(value: { mimeType: string; data: string }) {
+function imageResult(value: { mimeType: string; data: string; savePath?: string }) {
   if (value.mimeType.startsWith('image/')) {
+    const metadata: { mimeType: string; bytes: number; savePath?: string } = {
+      mimeType: value.mimeType,
+      bytes: Buffer.byteLength(value.data, 'base64'),
+    };
+    if (value.savePath) metadata.savePath = value.savePath;
     return {
       content: [
         { type: 'image' as const, data: value.data, mimeType: value.mimeType },
-        { type: 'text' as const, text: JSON.stringify({ mimeType: value.mimeType, bytes: Buffer.byteLength(value.data, 'base64') }) },
+        { type: 'text' as const, text: JSON.stringify(metadata) },
       ],
-      structuredContent: { mimeType: value.mimeType, bytes: Buffer.byteLength(value.data, 'base64') },
+      structuredContent: metadata,
     };
   }
   return result(value);
@@ -60,9 +65,9 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
 
   server.registerTool('browser_session', {
     title: 'Browser session lifecycle',
-    description: 'Create, list, inspect, reset, or close isolated Chromium sessions. Sessions are ephemeral unless a named profile is supplied.',
+    description: 'Create, reconnect, list, inspect, reset, or close isolated Chromium sessions. Sessions are ephemeral unless a named profile is supplied.',
     inputSchema: {
-      action: z.enum(['create', 'list', 'inspect', 'reset', 'close']),
+      action: z.enum(['create', 'reconnect', 'list', 'inspect', 'reset', 'close']),
       sessionId: z.string().optional(),
       profile: z.string().optional(),
       headless: z.boolean().optional(),
@@ -74,6 +79,10 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, wrap(async (input) => {
     if (input.action === 'create') return result(await (await manager.create(input)).info());
+    if (input.action === 'reconnect') {
+      if (!input.profile) throw new Error('profile is required');
+      return result(await manager.reconnect(input.profile).info());
+    }
     if (input.action === 'list') return result({ sessions: await manager.list() });
     if (!input.sessionId) throw new Error('sessionId is required');
     if (input.action === 'inspect') return result(await manager.get(input.sessionId).info());
@@ -129,7 +138,7 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
     inputSchema: {
       sessionId,
       action: z.enum(['click', 'double_click', 'hover', 'focus', 'fill', 'type', 'select', 'check', 'uncheck', 'press', 'scroll', 'drag', 'upload']),
-      ref: z.string().optional(), targetRef: z.string().optional(), text: z.string().optional(),
+      ref: z.string().optional(), targetRef: z.string().optional(), text: z.string().optional(), value: z.string().optional(),
       values: z.array(z.string()).optional(), key: z.string().optional(),
       deltaX: z.number().optional(), deltaY: z.number().optional(), files: z.array(z.string()).optional(), submit: z.boolean().optional(),
     },
@@ -200,12 +209,12 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
 
   server.registerTool('browser_capture', {
     title: 'Capture screenshot or PDF',
-    description: 'Capture a viewport, full page, element screenshot, or PDF. Images are returned as MCP image content.',
+    description: 'Capture a viewport, full page, element screenshot, or PDF. Images are returned as MCP image content and can optionally be saved to a local file.',
     inputSchema: {
       sessionId, pageId, format: z.enum(['png', 'jpeg', 'pdf']).default('png'), fullPage: z.boolean().optional(),
-      ref: z.string().optional(), quality: z.number().int().min(1).max(100).optional(),
+      ref: z.string().optional(), quality: z.number().int().min(1).max(100).optional(), savePath: z.string().min(1).optional(),
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   }, wrap(async (input) => imageResult(await manager.get(input.sessionId).capture(input))));
 
   server.registerTool('browser_evaluate', {
