@@ -10,6 +10,14 @@ interface ParsedSearchResult {
   snippet: string;
 }
 
+interface SearchOptions {
+  query: string;
+  provider?: SearchProviderName;
+  maxResults?: number;
+  fetchTop?: number;
+  searxngUrl?: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -86,7 +94,7 @@ export class SearchService {
     }
   }
 
-  async search(options: { query: string; provider?: SearchProviderName; maxResults?: number; fetchTop?: number }): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
+  async search(options: SearchOptions): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
     const errors: string[] = [];
     for (const provider of providers) {
@@ -95,7 +103,7 @@ export class SearchService {
         continue;
       }
       try {
-        const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50));
+        const results = await this.searchWithProvider(options.query, provider, Math.min(options.maxResults ?? 10, 50), options.searxngUrl);
         if (results.length === 0) throw new Error('Provider returned no recognizable results');
         const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = { query: options.query, provider, results };
         if ((options.fetchTop ?? 0) > 0) {
@@ -111,14 +119,14 @@ export class SearchService {
     throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
   }
 
-  private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<SearchResult[]> {
+  private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number, searxngUrl?: string): Promise<SearchResult[]> {
     const session = await this.manager.create();
     try {
       let parsed: ParsedSearchResult[];
       if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
       else if (provider === 'google') parsed = await this.searchGoogle(session, query, maxResults);
       else {
-        await session.navigate({ url: searchUrl(provider, query, this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        await session.navigate({ url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
         await session.wait({ delayMs: 500 });
         const pageInfo = (await session.listPages()).find((page) => page.selected);
         if (!pageInfo) return [];

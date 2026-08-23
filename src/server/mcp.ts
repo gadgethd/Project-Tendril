@@ -165,7 +165,10 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
       maxResults: z.number().int().min(1).max(50).default(10), fetchTop: z.number().int().min(0).max(10).default(0),
     },
     annotations: { readOnlyHint: true, openWorldHint: true },
-  }, wrap(async (input) => result({ untrustedContent: true, ...await search.search(input) })));
+  }, wrap(async (input) => result({
+    untrustedContent: true,
+    ...await search.search({ ...input, searxngUrl: manager.config.searxngUrl }),
+  })));
 
   server.registerTool('browser_research', {
     title: 'Gather web research evidence',
