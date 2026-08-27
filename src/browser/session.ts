@@ -1,4 +1,4 @@
-import { rm, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
@@ -6,8 +6,9 @@ import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
 import type {
-  BrowserCaptureOptions, BrowserCaptureResult, ChallengeInfo, ConsoleEntry, ElementRef, NetworkEntry, PageId,
-  PageSummary, SessionCreateOptions, SessionId, SessionInfo, SnapshotResult, TendrilConfig,
+  ActivityEntry, BrowserCaptureOptions, BrowserCaptureResult, ChallengeInfo, ConsoleEntry, ElementRef,
+  NetworkEntry, PageId, PageSummary, SessionCreateOptions, SessionExport, SessionHealth, SessionId,
+  SessionInfo, SnapshotResult, TendrilConfig,
 } from '../types.js';
 import { assertPathWithinRoots, newId, type Logger } from '../util.js';
 import { launchChromium, type ChromiumProcess } from './chromium.js';
@@ -48,8 +49,11 @@ export class TendrilSession {
   readonly consoleEntries: ConsoleEntry[] = [];
   readonly networkEntries: NetworkEntry[] = [];
   readonly downloads: DownloadEntry[] = [];
+  private readonly activityLog: ActivityEntry[] = [];
   private readonly pages = new Map<Page, PageId>();
   private readonly pagesById = new Map<PageId, Page>();
+  private readonly lastSnapshotByPage = new Map<PageId, string>();
+  private readonly pendingDownloads = new Map<string, Promise<void>>();
   private readonly requestIds = new WeakMap<Request, string>();
   private readonly responses = new Map<string, Response>();
   private readonly refs = new Map<ElementRef, ElementTarget>();
@@ -122,6 +126,12 @@ export class TendrilSession {
 
   private touch(): void { this.lastActivityAt = new Date(); }
 
+  private recordActivity(type: ActivityEntry['type'], detail: string, url?: string): void {
+    const timestamp = new Date();
+    this.lastActivityAt = timestamp;
+    this.pushBounded(this.activityLog, { type, timestamp: timestamp.toISOString(), detail, url }, 500);
+  }
+
   private attachPage(page: Page): void {
     if (this.pages.has(page)) return;
     const pageId = newId('page');
@@ -131,6 +141,7 @@ export class TendrilSession {
     page.on('close', () => {
       this.pages.delete(page);
       this.pagesById.delete(pageId);
+      this.lastSnapshotByPage.delete(pageId);
       if (this.selectedPageId === pageId) this.selectedPageId = this.pagesById.keys().next().value as string | undefined;
     });
     page.on('console', (message) => {
@@ -187,14 +198,19 @@ export class TendrilSession {
   private async onDownload(download: Download): Promise<void> {
     const entry: DownloadEntry = { id: newId('download'), suggestedFilename: download.suggestedFilename(), url: download.url() };
     this.pushBounded(this.downloads, entry, 100);
-    try {
-      const downloadPath = await download.path();
-      if (downloadPath) entry.path = downloadPath;
-      const failure = await download.failure();
-      if (failure) entry.failure = failure;
-    } catch (error) {
-      entry.failure = error instanceof Error ? error.message : String(error);
-    }
+    const completion = (async () => {
+      try {
+        const downloadPath = await download.path();
+        if (downloadPath) entry.path = downloadPath;
+        const failure = await download.failure();
+        if (failure) entry.failure = failure;
+      } catch (error) {
+        entry.failure = error instanceof Error ? error.message : String(error);
+      }
+    })();
+    this.pendingDownloads.set(entry.id, completion);
+    try { await completion; }
+    finally { this.pendingDownloads.delete(entry.id); }
   }
 
   private currentPage(pageId?: string): Page {
@@ -231,6 +247,14 @@ export class TendrilSession {
     return Promise.all([...this.pagesById.entries()].map(async ([id, page]) => ({
       id, url: page.url(), title: await page.title().catch(() => ''), selected: id === this.selectedPageId,
     })));
+  }
+
+  async listPagesWithContext(): Promise<Array<PageSummary & { lastSnapshot?: string }>> {
+    const pages = await this.listPages();
+    return pages.map((page) => {
+      const lastSnapshot = this.lastSnapshotByPage.get(page.id);
+      return lastSnapshot === undefined ? page : { ...page, lastSnapshot: lastSnapshot.slice(0, 500) };
+    });
   }
 
   async openPage(url = 'about:blank'): Promise<PageSummary> {
@@ -279,7 +303,10 @@ export class TendrilSession {
     else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     this.refs.clear();
-    return { url: page.url(), title: await page.title(), status: response?.status() ?? null };
+    const result = { url: page.url(), title: await page.title(), status: response?.status() ?? null };
+    const detail = action === 'goto' ? `goto ${options.url}` : action;
+    this.recordActivity('navigate', detail, result.url);
+    return result;
   }
 
   async setContent(html: string, pageId?: string): Promise<{ url: string; title: string }> {
@@ -373,7 +400,11 @@ export class TendrilSession {
   }
 
   async snapshot(options: { pageId?: string; mode?: SnapshotResult['mode']; maxChars?: number; cursor?: string } = {}): Promise<SnapshotResult> {
-    if (options.cursor) return this.continueSnapshot(options.cursor, options.maxChars);
+    if (options.cursor) {
+      const result = this.continueSnapshot(options.cursor, options.maxChars);
+      this.recordActivity('snapshot', 'continued snapshot', result.url);
+      return result;
+    }
     const page = this.currentPage(options.pageId);
     const pageId = this.pageId(page);
     const mode = options.mode ?? 'interactive';
@@ -383,12 +414,14 @@ export class TendrilSession {
       const maxChars = Math.min(options.maxChars ?? this.config.maxSnapshotChars, 100_000);
       const snapshotId = newId('snap');
       this.snapshotContents.set(snapshotId, full);
+      this.lastSnapshotByPage.set(pageId, full);
       const result: SnapshotResult = {
         snapshotId, pageId, url: page.url(), title: extracted.title, mode,
         content: full.slice(0, maxChars), truncated: full.length > maxChars,
         untrustedContent: true, warnings: [],
       };
       if (result.truncated) result.cursor = Buffer.from(JSON.stringify({ snapshotId, offset: maxChars })).toString('base64url');
+      this.recordActivity('snapshot', `${mode} snapshot`, result.url);
       return result;
     }
     const previousContent = [...this.snapshotContents.values()].at(-1);
@@ -396,6 +429,7 @@ export class TendrilSession {
     const created = await createSnapshot({ page, pageId, mode, maxChars: 5_000_000, previousContent });
     const full = created.result.content;
     this.snapshotContents.set(created.result.snapshotId, full);
+    this.lastSnapshotByPage.set(pageId, full);
     while (this.snapshotContents.size > 20) this.snapshotContents.delete(this.snapshotContents.keys().next().value as string);
     this.refs.clear();
     for (const [ref, target] of created.refs) this.refs.set(ref, target);
@@ -405,6 +439,7 @@ export class TendrilSession {
       created.result.truncated = true;
       created.result.cursor = Buffer.from(JSON.stringify({ snapshotId: created.result.snapshotId, offset: maxChars })).toString('base64url');
     }
+    this.recordActivity('snapshot', `${mode} snapshot`, created.result.url);
     return created.result;
   }
 
@@ -440,7 +475,9 @@ export class TendrilSession {
     if (options.action === 'press' && !options.ref) {
       const page = this.currentPage();
       await page.keyboard.press(options.key ?? 'Enter');
-      return { url: page.url() };
+      const result = { url: page.url() };
+      this.recordActivity('act', `${options.action} ${options.key ?? 'Enter'}`, result.url);
+      return result;
     }
     if (!options.ref) throw new TendrilError('STALE_ELEMENT_REF', 'ref is required for this action');
     const { page, frame, target } = this.resolveTarget(options.ref);
@@ -478,7 +515,9 @@ export class TendrilSession {
     }
     if (options.submit && ['fill', 'type'].includes(options.action)) await locator.press('Enter');
     this.refs.clear();
-    return { url: page.url() };
+    const result = { url: page.url() };
+    this.recordActivity('act', `${options.action}${options.ref ? ` ${options.ref}` : ''}`, result.url);
+    return result;
   }
 
   async wait(options: { pageId?: string; text?: string; selector?: string; url?: string; state?: 'load' | 'domcontentloaded' | 'networkidle'; timeoutMs?: number; delayMs?: number }): Promise<{ url: string }> {
@@ -495,19 +534,24 @@ export class TendrilSession {
 
   async extract(options: { pageId?: string; format?: 'all' | 'html' | 'markdown' | 'text' | 'links' | 'metadata' | 'forms' | 'tables'; selector?: string }): Promise<unknown> {
     const page = this.currentPage(options.pageId);
+    let result: unknown;
     if (options.selector) {
-      return page.locator(options.selector).evaluateAll((nodes) => nodes.map((node) => ({
+      result = await page.locator(options.selector).evaluateAll((nodes) => nodes.map((node) => ({
         text: node.textContent?.replace(/\s+/g, ' ').trim(),
         html: node.outerHTML,
         attributes: Object.fromEntries([...node.attributes].map((attribute) => [attribute.name, attribute.value])),
       })));
+    } else {
+      const format = options.format ?? 'all';
+      if (format === 'forms') result = await extractForms(page);
+      else if (format === 'tables') result = await extractTables(page);
+      else {
+        const extracted = await extractPage(page);
+        result = format === 'all' ? extracted : extracted[format];
+      }
     }
-    const format = options.format ?? 'all';
-    if (format === 'forms') return extractForms(page);
-    if (format === 'tables') return extractTables(page);
-    const extracted = await extractPage(page);
-    if (format === 'all') return extracted;
-    return extracted[format];
+    this.recordActivity('extract', options.selector ? `selector ${options.selector}` : (options.format ?? 'all'), page.url());
+    return result;
   }
 
   async capture(options: BrowserCaptureOptions): Promise<BrowserCaptureResult> {
@@ -531,15 +575,140 @@ export class TendrilSession {
       result.savePath = resolved;
       await writeFile(resolved, buffer);
     }
+    this.recordActivity('capture', `${type}${options.savePath ? ` saved to ${options.savePath}` : ''}`, page.url());
     return result;
   }
 
   async evaluate(expression: string, pageId?: string): Promise<unknown> {
     const page = this.currentPage(pageId);
-    return page.evaluate((source) => {
+    const result = await page.evaluate((source) => {
       // This is intentionally page-scoped and cannot access the Tendril Node process.
       return (0, eval)(source) as unknown;
     }, expression);
+    this.recordActivity('evaluate', expression.slice(0, 200), page.url());
+    return result;
+  }
+
+  getActivityLog(): ActivityEntry[] { return this.activityLog.map((entry) => ({ ...entry })); }
+
+  async health(): Promise<SessionHealth> {
+    const pid = this.chromium.child.pid;
+    let alive = false;
+    if (pid !== undefined) {
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (error) {
+        alive = error instanceof Error && 'code' in error && error.code === 'EPERM';
+      }
+    }
+
+    let memoryBytes: number | undefined;
+    if (alive && pid !== undefined) {
+      try {
+        const status = await readFile(`/proc/${pid}/status`, 'utf8');
+        const vmRssKb = status.match(/^VmRSS:\s+(\d+)\s+kB$/m)?.[1];
+        if (vmRssKb !== undefined) memoryBytes = Number(vmRssKb) * 1024;
+      } catch {
+        // /proc is Linux-specific; process liveness is still useful elsewhere.
+      }
+    }
+
+    const health: SessionHealth = {
+      alive,
+      lastActivityAt: this.lastActivityAt.toISOString(),
+      uptimeMs: Math.max(0, Date.now() - this.createdAt.getTime()),
+      pageCount: this.pagesById.size,
+    };
+    if (pid !== undefined) health.pid = pid;
+    if (memoryBytes !== undefined) health.memoryBytes = memoryBytes;
+    return health;
+  }
+
+  async exportCookies(): Promise<AddCookie[]> {
+    this.touch();
+    return this.chromium.context.cookies();
+  }
+
+  async importCookies(cookies: AddCookie[]): Promise<void> {
+    this.touch();
+    await this.chromium.context.addCookies(cookies);
+  }
+
+  async exportSession(): Promise<SessionExport> {
+    const page = this.currentPage();
+    const localStorage = await page.evaluate(() => Object.fromEntries(
+      Array.from({ length: window.localStorage.length }, (_, index) => {
+        const key = window.localStorage.key(index)!;
+        return [key, window.localStorage.getItem(key) ?? ''];
+      }),
+    )).catch(() => undefined);
+    const viewport = page.viewportSize() ?? await page.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    })).catch(() => undefined);
+    const exported: SessionExport = {
+      version: 1,
+      cookies: await this.exportCookies(),
+      url: page.url(),
+      exportedAt: new Date().toISOString(),
+    };
+    if (this.profile) exported.profile = this.profile;
+    if (localStorage !== undefined) exported.localStorage = localStorage;
+    if (viewport !== undefined) exported.viewport = viewport;
+    return exported;
+  }
+
+  async importSession(data: SessionExport): Promise<void> {
+    if (data.version !== 1) throw new TendrilError('UNSUPPORTED_OPERATION', `Unsupported session export version: ${String(data.version)}`);
+    await this.importCookies(data.cookies as AddCookie[]);
+    const page = this.currentPage();
+    if (data.url === 'about:blank') {
+      await page.goto(data.url);
+      this.refs.clear();
+    } else {
+      await this.navigate({ pageId: this.pageId(page), url: data.url });
+    }
+    if (data.localStorage !== undefined) {
+      await page.evaluate((values) => {
+        window.localStorage.clear();
+        for (const [key, value] of Object.entries(values)) window.localStorage.setItem(key, value);
+      }, data.localStorage);
+    }
+    if (data.viewport !== undefined) await page.setViewportSize(data.viewport);
+  }
+
+  async saveDownload(downloadId: string, destPath: string): Promise<{ path: string; bytes: number }> {
+    this.touch();
+    const entry = this.downloads.find((download) => download.id === downloadId);
+    if (!entry) throw new TendrilError('UNSUPPORTED_OPERATION', `Download not found: ${downloadId}`);
+    const pending = this.pendingDownloads.get(downloadId);
+    if (pending) await pending;
+    if (entry.failure) throw new TendrilError('UNSUPPORTED_OPERATION', `Download failed: ${entry.failure}`);
+    if (!entry.path) throw new TendrilError('UNSUPPORTED_OPERATION', `Download path is unavailable: ${downloadId}`);
+
+    const absoluteDestination = path.resolve(destPath);
+    let destination: string;
+    try {
+      await lstat(absoluteDestination);
+      destination = await assertPathWithinRoots(absoluteDestination, this.config.workspaceRoots);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      const parent = await assertPathWithinRoots(path.dirname(absoluteDestination), this.config.workspaceRoots);
+      destination = path.join(parent, path.basename(absoluteDestination));
+    }
+
+    const source = entry.path;
+    const bytes = (await stat(source)).size;
+    try {
+      await rename(source, destination);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EXDEV')) throw error;
+      await copyFile(source, destination);
+      await unlink(source);
+    }
+    entry.path = destination;
+    return { path: destination, bytes };
   }
 
   inspect(options: { kind: 'console' | 'network' | 'downloads'; clear?: boolean }): unknown[] {
