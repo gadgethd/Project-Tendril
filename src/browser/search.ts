@@ -1,5 +1,11 @@
 import { TendrilError } from '../errors.js';
-import type { EvidenceChunk, SearchProviderName, SearchResult } from '../types.js';
+import type {
+  EvidenceChunk,
+  SearchProviderHealth,
+  SearchProviderName,
+  SearchRateLimit,
+  SearchResult,
+} from '../types.js';
 import type { Logger } from '../util.js';
 import type { BrowserManager } from './manager.js';
 import type { TendrilSession } from './session.js';
@@ -76,9 +82,57 @@ interface ProviderSearchFailure {
   ok: false;
   provider: SearchProviderName;
   error: string;
+  rateLimit?: SearchRateLimit;
 }
 
 type ProviderSearchAttempt = ProviderSearchSuccess | ProviderSearchFailure;
+
+interface SearchResponse {
+  query: string;
+  provider: SearchProviderName;
+  results: SearchResult[];
+  evidence?: EvidenceChunk[];
+  rateLimit?: SearchRateLimit;
+}
+
+interface ProviderStats {
+  available: boolean;
+  attempts: number;
+  totalLatencyMs: number;
+  errorCount: number;
+  lastSuccess?: string;
+  lastFailure?: string;
+}
+
+class ProviderRateLimitError extends Error {
+  constructor(readonly rateLimit: SearchRateLimit) {
+    super(`Search provider ${rateLimit.provider} returned HTTP 429`);
+    this.name = 'ProviderRateLimitError';
+  }
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function rateLimitFromError(error: unknown, provider: SearchProviderName): SearchRateLimit | undefined {
+  if (error instanceof ProviderRateLimitError) return { ...error.rateLimit };
+
+  const record = isRecord(error) ? error : undefined;
+  const embedded = record && isRecord(record.rateLimit) ? record.rateLimit : undefined;
+  const status = finiteNumber(record?.status) ?? finiteNumber(record?.statusCode);
+  const message = error instanceof Error ? error.message : String(error);
+  if (!embedded && status !== 429 && !/\b429\b/.test(message)) return undefined;
+
+  const rateLimit: SearchRateLimit = { provider };
+  const retryAfterMs = finiteNumber(embedded?.retryAfterMs) ?? finiteNumber(record?.retryAfterMs);
+  const remaining = finiteNumber(embedded?.remaining) ?? finiteNumber(record?.remaining);
+  const limit = finiteNumber(embedded?.limit) ?? finiteNumber(record?.limit);
+  if (retryAfterMs !== undefined) rateLimit.retryAfterMs = retryAfterMs;
+  if (remaining !== undefined) rateLimit.remaining = remaining;
+  if (limit !== undefined) rateLimit.limit = limit;
+  return rateLimit;
+}
 
 export class SearchCache {
   private readonly entries = new Map<string, SearchCacheEntry>();
@@ -151,11 +205,13 @@ function searchUrl(provider: SearchProviderName, query: string, searxngUrl?: str
 
 export class SearchService {
   private readonly googleConfigured: boolean;
+  private readonly providerStats = new Map<SearchProviderName, ProviderStats>();
 
   constructor(
     private readonly manager: BrowserManager,
     private readonly logger: Logger,
     private readonly cache = new SearchCache(),
+    private readonly now: () => number = Date.now,
   ) {
     this.googleConfigured = Boolean(manager.config.googleSearchApiKey && manager.config.googleSearchCx);
     if (!this.googleConfigured) {
@@ -163,11 +219,20 @@ export class SearchService {
     }
   }
 
-  async search(options: SearchOptions): Promise<{ query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] }> {
+  getProviderHealth(): SearchProviderHealth[];
+  getProviderHealth(provider: SearchProviderName): SearchProviderHealth;
+  getProviderHealth(provider?: SearchProviderName): SearchProviderHealth | SearchProviderHealth[] {
+    if (provider) return this.providerHealth(provider);
+    const providers = [...new Set([...this.manager.config.searchProviders, ...this.providerStats.keys()])];
+    return providers.map((name) => this.providerHealth(name));
+  }
+
+  async search(options: SearchOptions): Promise<SearchResponse> {
     const providers = options.provider ? [options.provider] : this.manager.config.searchProviders;
     const maxResults = Math.min(options.maxResults ?? 10, MAX_SEARCH_RESULTS);
     const errors: string[] = [];
     let success: ProviderSearchSuccess | undefined;
+    let rateLimit: SearchRateLimit | undefined;
     let remainingProviders = providers;
 
     if (!options.provider && providers.length >= 2) {
@@ -185,6 +250,7 @@ export class SearchService {
           break;
         }
         errors.push(`${attempt.provider}: ${attempt.error}`);
+        rateLimit ??= attempt.rateLimit;
       }
       remainingProviders = providers.slice(2);
     }
@@ -196,17 +262,20 @@ export class SearchService {
         success = attempt;
       } else {
         errors.push(`${attempt.provider}: ${attempt.error}`);
+        rateLimit ??= attempt.rateLimit;
       }
     }
 
     if (!success) {
+      if (rateLimit) return { query: options.query, provider: rateLimit.provider, results: [], rateLimit };
       throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${errors.join('; ')}`, { retryable: true });
     }
-    const output: { query: string; provider: SearchProviderName; results: SearchResult[]; evidence?: EvidenceChunk[] } = {
+    const output: SearchResponse = {
       query: options.query,
       provider: success.provider,
       results: success.results,
     };
+    if (rateLimit) output.rateLimit = rateLimit;
     if ((options.fetchTop ?? 0) > 0) {
       output.evidence = await this.fetchEvidence(success.results.slice(0, Math.min(options.fetchTop!, 10)), options.query);
     }
@@ -216,12 +285,14 @@ export class SearchService {
   private async tryProvider(query: string, provider: SearchProviderName, maxResults: number): Promise<ProviderSearchAttempt> {
     try {
       const results = await this.getSearchResults(query, provider, maxResults);
-      if (results.length === 0) throw new Error('Provider returned no recognizable results');
       return { ok: true, provider, results };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn('Search provider failed', { provider, error: message });
-      return { ok: false, provider, error: message };
+      const rateLimit = rateLimitFromError(error, provider);
+      return rateLimit
+        ? { ok: false, provider, error: message, rateLimit }
+        : { ok: false, provider, error: message };
     }
   }
 
@@ -232,9 +303,62 @@ export class SearchService {
       return cached.slice(0, maxResults);
     }
     this.logger.debug('Search cache miss', { provider, query });
-    const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
-    if (results.length > 0) this.cache.set(query, provider, results);
-    return results.slice(0, maxResults);
+    const startedAt = this.now();
+    try {
+      const results = await this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS);
+      if (results.length === 0) throw new Error('Provider returned no recognizable results');
+      const completedAt = this.now();
+      this.recordProviderSuccess(provider, Math.max(0, completedAt - startedAt), completedAt);
+      this.cache.set(query, provider, results);
+      return results.slice(0, maxResults);
+    } catch (error) {
+      const completedAt = this.now();
+      this.recordProviderFailure(provider, Math.max(0, completedAt - startedAt), completedAt);
+      throw error;
+    }
+  }
+
+  private providerHealth(provider: SearchProviderName): SearchProviderHealth {
+    const stats = this.providerStats.get(provider);
+    if (!stats) {
+      return {
+        provider,
+        available: provider !== 'google' || this.googleConfigured,
+        errorCount: 0,
+      };
+    }
+    return {
+      provider,
+      available: stats.available,
+      errorCount: stats.errorCount,
+      averageLatencyMs: stats.totalLatencyMs / stats.attempts,
+      ...(stats.lastSuccess ? { lastSuccess: stats.lastSuccess } : {}),
+      ...(stats.lastFailure ? { lastFailure: stats.lastFailure } : {}),
+    };
+  }
+
+  private recordProviderSuccess(provider: SearchProviderName, latencyMs: number, completedAt: number): void {
+    const previous = this.providerStats.get(provider);
+    this.providerStats.set(provider, {
+      available: true,
+      attempts: (previous?.attempts ?? 0) + 1,
+      totalLatencyMs: (previous?.totalLatencyMs ?? 0) + latencyMs,
+      errorCount: previous?.errorCount ?? 0,
+      lastSuccess: new Date(completedAt).toISOString(),
+      ...(previous?.lastFailure ? { lastFailure: previous.lastFailure } : {}),
+    });
+  }
+
+  private recordProviderFailure(provider: SearchProviderName, latencyMs: number, completedAt: number): void {
+    const previous = this.providerStats.get(provider);
+    this.providerStats.set(provider, {
+      available: false,
+      attempts: (previous?.attempts ?? 0) + 1,
+      totalLatencyMs: (previous?.totalLatencyMs ?? 0) + latencyMs,
+      errorCount: (previous?.errorCount ?? 0) + 1,
+      lastFailure: new Date(completedAt).toISOString(),
+      ...(previous?.lastSuccess ? { lastSuccess: previous.lastSuccess } : {}),
+    });
   }
 
   private async searchWithProvider(query: string, provider: SearchProviderName, maxResults: number, searxngUrl?: string): Promise<SearchResult[]> {
@@ -244,7 +368,8 @@ export class SearchService {
       if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
       else if (provider === 'google') parsed = await this.searchGoogle(session, query, maxResults);
       else {
-        await session.navigate({ url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        const navigation = await session.navigate({ url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        if (navigation.status === 429) throw new ProviderRateLimitError({ provider });
         await session.wait({ delayMs: 500 });
         const pageInfo = (await session.listPages()).find((page) => page.selected);
         if (!pageInfo) return [];
@@ -288,6 +413,7 @@ export class SearchService {
     const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     try {
       const response = await session.fetchText(apiUrl);
+      if (response.status === 429) throw new ProviderRateLimitError({ provider: 'duckduckgo' });
       if (response.status === null || response.status < 200 || response.status >= 300) {
         throw new Error(`DuckDuckGo API returned HTTP ${response.status ?? 'unknown'}`);
       }
@@ -295,10 +421,13 @@ export class SearchService {
       if (parsed.length === 0) throw new Error('DuckDuckGo API returned no recognizable results');
       return parsed;
     } catch (error) {
+      const rateLimit = rateLimitFromError(error, 'duckduckgo');
+      if (rateLimit) throw new ProviderRateLimitError(rateLimit);
       this.logger.warn('DuckDuckGo API failed; falling back to HTML search', {
         error: error instanceof Error ? error.message : String(error),
       });
-      await session.navigate({ url: searchUrl('duckduckgo', query), waitUntil: 'domcontentloaded' });
+      const navigation = await session.navigate({ url: searchUrl('duckduckgo', query), waitUntil: 'domcontentloaded' });
+      if (navigation.status === 429) throw new ProviderRateLimitError({ provider: 'duckduckgo' });
       await session.wait({ delayMs: 500 });
       const pageInfo = (await session.listPages()).find((page) => page.selected);
       if (!pageInfo) return [];
@@ -326,6 +455,7 @@ export class SearchService {
       url.searchParams.set('num', String(count));
       url.searchParams.set('start', String(parsed.length + 1));
       const response = await session.fetchText(url.toString());
+      if (response.status === 429) throw new ProviderRateLimitError({ provider: 'google' });
       let payload: unknown;
       try { payload = JSON.parse(response.text) as unknown; }
       catch (error) { throw new Error('Google Custom Search API returned invalid JSON', { cause: error }); }

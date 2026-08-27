@@ -6,6 +6,7 @@ import type { BrowserManager } from './manager.js';
 
 interface InternalJob extends CrawlJob { cancelled: boolean }
 interface RobotsPolicy { isAllowed(url: string, userAgent?: string): boolean | undefined }
+interface CrawlOptions { url: string; maxPages?: number; maxDepth?: number; sameOrigin?: boolean; respectRobots?: boolean }
 const parseRobots = robotsParser as unknown as (url: string, content: string) => RobotsPolicy;
 
 function canonical(raw: string): string | undefined {
@@ -22,12 +23,22 @@ export class CrawlService {
 
   constructor(private readonly manager: BrowserManager, private readonly logger: Logger) {}
 
-  start(options: { url: string; maxPages?: number; maxDepth?: number; sameOrigin?: boolean; respectRobots?: boolean }): CrawlJob {
+  start(options: CrawlOptions): CrawlJob {
+    return this.startJob(options);
+  }
+
+  followUp(parentJobId: string, options: CrawlOptions): CrawlJob {
+    if (!this.jobs.has(parentJobId)) throw new TendrilError('CRAWL_FAILED', `Crawl job not found: ${parentJobId}`);
+    return this.startJob(options, parentJobId);
+  }
+
+  private startJob(options: CrawlOptions, parentJobId?: string): CrawlJob {
     const url = canonical(options.url);
     if (!url) throw new TendrilError('INVALID_URL', `Invalid crawl URL: ${options.url}`);
     const job: InternalJob = {
       id: newId('crawl'), status: 'running', startedAt: new Date().toISOString(), queued: 1,
       visited: 0, results: [], cancelled: false,
+      ...(parentJobId ? { parentJobId } : {}),
     };
     this.jobs.set(job.id, job);
     void this.run(job, {

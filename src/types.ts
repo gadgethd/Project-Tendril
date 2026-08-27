@@ -133,6 +133,7 @@ export interface CrawlResult {
 
 export interface CrawlJob {
   id: string;
+  parentJobId?: string;
   status: 'running' | 'completed' | 'cancelled' | 'failed';
   startedAt: string;
   completedAt?: string;

@@ -3,9 +3,12 @@ import type { AddressInfo } from 'node:net';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CrawlService } from '../src/browser/crawl.js';
+import type { BrowserManager } from '../src/browser/manager.js';
 import { loadConfig } from '../src/config.js';
 import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
+import { Logger } from '../src/util.js';
 
 let runtime: TendrilRuntime | undefined;
 let fixture: http.Server | undefined;
@@ -17,6 +20,22 @@ afterEach(async () => {
 });
 
 describe('CrawlService', () => {
+  it('starts follow-up jobs with validated parent lineage', () => {
+    const service = new CrawlService({} as BrowserManager, new Logger('error'));
+    const run = vi.fn();
+    Object.defineProperty(service, 'run', { value: run });
+
+    const parent = service.start({ url: 'https://example.com/root' });
+    const child = service.followUp(parent.id, { url: 'https://example.com/detail', maxPages: 3 });
+
+    expect(parent.parentJobId).toBeUndefined();
+    expect(child.parentJobId).toBe(parent.id);
+    expect(service.get(child.id).parentJobId).toBe(parent.id);
+    expect(child.id).not.toBe(parent.id);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(() => service.followUp('missing', { url: 'https://example.com' })).toThrow('Crawl job not found: missing');
+  });
+
   it('uses Chromium and respects robots.txt', async () => {
     let privateRequests = 0;
     fixture = http.createServer((request, response) => {
