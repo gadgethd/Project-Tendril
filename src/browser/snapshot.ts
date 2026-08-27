@@ -26,6 +26,14 @@ interface RawNode {
   children?: RawNode[];
 }
 
+interface SnapshotDiffSummary {
+  added: number;
+  removed: number;
+  unchanged: number;
+}
+
+type SnapshotResultWithDiff = SnapshotResult & { diffSummary?: SnapshotDiffSummary };
+
 function formatNode(node: SnapshotNode, depth = 0): string[] {
   const indent = '  '.repeat(depth);
   const attributes = [
@@ -49,8 +57,43 @@ function detectInjection(content: string): string[] {
   return warnings;
 }
 
-async function snapshotFrame(frame: Frame, interactiveOnly: boolean): Promise<RawNode[]> {
-  return frame.locator('body').evaluate((body, onlyInteractive) => {
+function diffSnapshotLines(previousContent: string, currentContent: string): { content: string; summary: SnapshotDiffSummary } {
+  const previousLines = previousContent.length === 0 ? [] : previousContent.split('\n');
+  const currentLines = currentContent.length === 0 ? [] : currentContent.split('\n');
+  const remainingPrevious = new Map<string, number>();
+  const remainingCurrent = new Map<string, number>();
+  for (const line of previousLines) remainingPrevious.set(line, (remainingPrevious.get(line) ?? 0) + 1);
+  for (const line of currentLines) remainingCurrent.set(line, (remainingCurrent.get(line) ?? 0) + 1);
+
+  let unchanged = 0;
+  const added: string[] = [];
+  for (const line of currentLines) {
+    const count = remainingPrevious.get(line) ?? 0;
+    if (count > 0) {
+      unchanged += 1;
+      remainingPrevious.set(line, count - 1);
+    } else {
+      added.push(line);
+    }
+  }
+
+  const removed: string[] = [];
+  for (const line of previousLines) {
+    const count = remainingCurrent.get(line) ?? 0;
+    if (count > 0) remainingCurrent.set(line, count - 1);
+    else removed.push(line);
+  }
+
+  return {
+    content: [...removed.map((line) => `- ${line}`), ...added.map((line) => `+ ${line}`)].join('\n'),
+    summary: { added: added.length, removed: removed.length, unchanged },
+  };
+}
+
+async function snapshotFrame(frame: Frame, interactiveOnly: boolean, compact = false, maxDepth = 3): Promise<RawNode[]> {
+  const depthLimit = Number.isFinite(maxDepth) ? Math.max(0, Math.floor(maxDepth)) : 3;
+  return frame.locator('body').evaluate((body, snapshotOptions) => {
+    const { onlyInteractive, useCompact, compactMaxDepth } = snapshotOptions;
     const interactiveRoles = new Set(['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option', 'menuitem', 'tab', 'slider', 'spinbutton', 'switch', 'searchbox']);
     const implicitRole = (element: Element): string => {
       const explicit = element.getAttribute('role');
@@ -116,19 +159,24 @@ async function snapshotFrame(frame: Frame, interactiveOnly: boolean): Promise<Ra
       }
       return (element.getAttribute('alt') ?? element.getAttribute('title') ?? element.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
     };
-    const visit = (element: Element): RawNode | null => {
+    const visit = (element: Element, depth: number): RawNode[] => {
       const style = getComputedStyle(element);
-      if (style.display === 'none' || style.visibility === 'hidden' || element.getAttribute('aria-hidden') === 'true') return null;
+      if (style.display === 'none' || style.visibility === 'hidden' || element.getAttribute('aria-hidden') === 'true') return [];
       const role = implicitRole(element);
       const interactive = interactiveRoles.has(role) || element.hasAttribute('tabindex') || element.hasAttribute('contenteditable');
-      const children = [...element.children].map(visit).filter((item): item is RawNode => item !== null);
+      const children = [...element.children].flatMap((child) => visit(child, depth + 1));
+      if (useCompact && depth > compactMaxDepth && !interactive) return children;
       const name = labelFor(element);
-      const meaningful = interactive || role !== 'generic' || (name.length > 0 && element.children.length === 0);
-      if (onlyInteractive && !interactive && children.length === 0) return null;
-      if (!meaningful && children.length === 1) return children[0] ?? null;
-      if (!meaningful && children.length === 0) return null;
+      const inlineText = useCompact && !interactive && children.length === 1 && children[0]?.role === 'text'
+        ? children[0]
+        : undefined;
+      const meaningful = interactive || role !== 'generic' || (name.length > 0 && element.children.length === 0) || inlineText !== undefined;
+      if (onlyInteractive && !interactive && children.length === 0) return [];
+      if (!meaningful && children.length === 1) return children;
+      if (!meaningful && children.length === 0) return [];
       const node: RawNode = { role: role === 'generic' && element.children.length === 0 ? 'text' : role };
-      if (name) node.name = name;
+      const nodeName = inlineText?.name ?? name;
+      if (nodeName) node.name = nodeName;
       if (interactive) node.selector = selectorFor(element);
       if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
         if (element.value) node.value = element.value.slice(0, 500);
@@ -139,11 +187,12 @@ async function snapshotFrame(frame: Frame, interactiveOnly: boolean): Promise<Ra
       if (element.getAttribute('aria-selected') === 'true') node.selected = true;
       if (element === document.activeElement) node.focused = true;
       if (role === 'heading') node.level = Number(element.tagName.slice(1)) || Number(element.getAttribute('aria-level')) || undefined;
-      if (children.length) node.children = children;
-      return node;
+      if (children.length && inlineText === undefined) node.children = children;
+      if (useCompact && node.role === 'generic' && !node.name && !node.children?.length) return [];
+      return [node];
     };
-    return [...body.children].map(visit).filter((item): item is RawNode => item !== null);
-  }, interactiveOnly);
+    return [...body.children].flatMap((child) => visit(child, 0));
+  }, { onlyInteractive: interactiveOnly, useCompact: compact, compactMaxDepth: depthLimit });
 }
 
 export async function createSnapshot(options: {
@@ -152,7 +201,9 @@ export async function createSnapshot(options: {
   mode: SnapshotResult['mode'];
   maxChars: number;
   previousContent?: string;
-}): Promise<{ result: SnapshotResult; refs: Map<ElementRef, ElementTarget> }> {
+  compact?: boolean;
+  maxDepth?: number;
+}): Promise<{ result: SnapshotResultWithDiff; refs: Map<ElementRef, ElementTarget> }> {
   const snapshotId = newId('snap');
   const refs = new Map<ElementRef, ElementTarget>();
   const frames = options.page.frames();
@@ -162,7 +213,7 @@ export async function createSnapshot(options: {
     const frame = frames[frameIndex]!;
     let rawNodes: RawNode[];
     try {
-      rawNodes = await snapshotFrame(frame, options.mode === 'interactive');
+      rawNodes = await snapshotFrame(frame, options.mode === 'interactive', options.compact ?? false, options.maxDepth ?? 3);
     } catch (error) {
       rawNodes = [{ role: 'document', name: `Snapshot unavailable: ${error instanceof Error ? error.message : String(error)}` }];
     }
@@ -197,17 +248,16 @@ export async function createSnapshot(options: {
     else nodes.push(...converted);
   }
   let content = nodes.flatMap((node) => formatNode(node)).join('\n');
+  let diffSummary: SnapshotDiffSummary | undefined;
   if (options.mode === 'diff' && options.previousContent !== undefined) {
-    const before = new Set(options.previousContent.split('\n'));
-    const after = new Set(content.split('\n'));
-    const removed = [...before].filter((line) => !after.has(line)).map((line) => `- ${line}`);
-    const added = [...after].filter((line) => !before.has(line)).map((line) => `+ ${line}`);
-    content = [...removed, ...added].join('\n') || '(no semantic changes)';
+    const diff = diffSnapshotLines(options.previousContent, content);
+    content = diff.content;
+    diffSummary = diff.summary;
   }
   const warnings = detectInjection(content);
   const truncated = content.length > options.maxChars;
   const visibleContent = truncated ? content.slice(0, options.maxChars) : content;
-  const result: SnapshotResult = {
+  const result: SnapshotResultWithDiff = {
     snapshotId,
     pageId: options.pageId,
     url: options.page.url(),
@@ -219,6 +269,7 @@ export async function createSnapshot(options: {
     untrustedContent: true,
     warnings,
   };
+  if (diffSummary) result.diffSummary = diffSummary;
   if (truncated) result.cursor = Buffer.from(JSON.stringify({ snapshotId, offset: options.maxChars })).toString('base64url');
   return { result, refs };
 }
