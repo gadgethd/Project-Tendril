@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,7 +112,7 @@ describe('TendrilSession', () => {
       await expect(session.saveDownload(download!.id, path.join(os.tmpdir(), 'outside-workspace.txt')))
         .rejects.toMatchObject({ code: 'FILE_ACCESS_DENIED' });
       const saved = await session.saveDownload(download!.id, destination);
-      expect(saved).toEqual({ path: destination, bytes: 13 });
+      expect(saved).toEqual({ path: await realpath(destination), bytes: 13 });
       expect(await readFile(destination, 'utf8')).toBe('download body');
 
       const health = await session.health();
