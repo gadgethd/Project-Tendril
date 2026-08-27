@@ -1,6 +1,6 @@
 {
   "name": "project-tendril",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A local-first Chromium browser and web-research runtime for AI agents",
   "keywords": [
     "ai-agents",
