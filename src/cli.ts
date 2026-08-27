@@ -18,7 +18,7 @@ const program = new Command();
 program
   .name('tendril')
   .description('Local agent-first Chromium browser with MCP, REST, and CDP')
-  .version('1.0.0')
+  .version('1.1.0')
   .option('-c, --config <path>', 'configuration JSON path');
 
 program.command('serve')
@@ -37,7 +37,7 @@ program.command('serve')
     } });
     const runtime = await createRuntime(config);
     const httpServer = await startHttpServer({ ...runtime });
-    process.stdout.write(`Project Tendril 1.0.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${config.host}:${httpServer.port}/mcp\n`);
+    process.stdout.write(`Project Tendril 1.1.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${config.host}:${httpServer.port}/mcp\n`);
     await waitForShutdown(async () => { await httpServer.close(); await runtime.close(); });
   });
 
