@@ -12,6 +12,8 @@ export interface TendrilConfig {
   sessionIdleMs: number;
   actionTimeoutMs: number;
   navigationTimeoutMs: number;
+  challengeMaxRetries?: number;   // default 3
+  challengeRetryDelayMs?: number; // default 2000
   maxSnapshotChars: number;
   maxResponseBodyBytes: number;
   blockPrivateNetworks: boolean;
@@ -38,6 +40,7 @@ export interface SessionCreateOptions {
   timezoneId?: string;
   allowedHosts?: string[];
   allowPrivateNetwork?: boolean;
+  interceptionRules?: InterceptionRule[];
 }
 
 export interface SessionInfo {
@@ -176,4 +179,67 @@ export interface LogRecord {
   message: string;
   time: string;
   [key: string]: unknown;
+}
+
+export interface CompactSnapshotOptions {
+  maxDepth?: number;        // default 3 (vs unlimited in interactive)
+  inlineText?: boolean;     // collapse single-child text nodes into parent
+  dropEmpty?: boolean;      // remove containers with no visible content
+}
+
+export interface StructuredData {
+  jsonLd?: Record<string, unknown>[];
+  openGraph?: Record<string, string>;
+  microdata?: Record<string, unknown>[];
+  prices?: Array<{ amount: string; currency: string; selector: string }>;
+  dates?: Array<{ value: string; label: string; selector: string }>;
+  authors?: string[];
+}
+
+export interface SearchRateLimit {
+  provider: SearchProviderName;
+  retryAfterMs?: number;
+  remaining?: number;
+  limit?: number;
+}
+
+export interface SearchProviderHealth {
+  provider: SearchProviderName;
+  available: boolean;
+  lastSuccess?: string;
+  lastFailure?: string;
+  averageLatencyMs?: number;
+  errorCount: number;
+}
+
+export interface ActivityEntry {
+  type: 'navigate' | 'act' | 'snapshot' | 'extract' | 'search' | 'capture' | 'evaluate' | 'challenge';
+  timestamp: string;
+  detail: string;
+  url?: string;
+}
+
+export interface InterceptionRule {
+  urlPattern: string;       // glob pattern
+  block?: boolean;
+  modifyHeaders?: Record<string, string>;
+}
+
+export interface SessionHealth {
+  alive: boolean;
+  pid?: number;
+  memoryBytes?: number;
+  lastActivityAt: string;
+  uptimeMs: number;
+  pageCount: number;
+}
+
+export interface SessionExport {
+  version: 1;
+  profile?: string;
+  cookies: Array<Record<string, unknown>>;
+  localStorage?: Record<string, string>;
+  url: string;
+  viewport?: { width: number; height: number };
+  exportedAt: string;
 }
