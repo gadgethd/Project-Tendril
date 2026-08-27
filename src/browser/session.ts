@@ -399,7 +399,7 @@ export class TendrilSession {
     throw new TendrilError('TIMEOUT', `Too many redirects fetching ${url}`, { retryable: true });
   }
 
-  async snapshot(options: { pageId?: string; mode?: SnapshotResult['mode']; maxChars?: number; cursor?: string } = {}): Promise<SnapshotResult> {
+  async snapshot(options: { pageId?: string; mode?: SnapshotResult['mode']; maxChars?: number; cursor?: string; compact?: boolean; maxDepth?: number; previousSnapshotId?: string } = {}): Promise<SnapshotResult> {
     if (options.cursor) {
       const result = this.continueSnapshot(options.cursor, options.maxChars);
       this.recordActivity('snapshot', 'continued snapshot', result.url);
@@ -424,9 +424,14 @@ export class TendrilSession {
       this.recordActivity('snapshot', `${mode} snapshot`, result.url);
       return result;
     }
-    const previousContent = [...this.snapshotContents.values()].at(-1);
+    const previousContent = options.previousSnapshotId
+      ? this.snapshotContents.get(options.previousSnapshotId)
+      : [...this.snapshotContents.values()].at(-1);
     const maxChars = Math.min(options.maxChars ?? this.config.maxSnapshotChars, 100_000);
-    const created = await createSnapshot({ page, pageId, mode, maxChars: 5_000_000, previousContent });
+    const created = await createSnapshot({
+      page, pageId, mode, maxChars: 5_000_000, previousContent,
+      compact: options.compact, maxDepth: options.maxDepth,
+    });
     const full = created.result.content;
     this.snapshotContents.set(created.result.snapshotId, full);
     this.lastSnapshotByPage.set(pageId, full);
