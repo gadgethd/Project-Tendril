@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, realpath, stat } from 'node:fs/promises';
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { TendrilError } from './errors.js';
 import type { LogRecord, TendrilConfig } from './types.js';
@@ -55,13 +55,34 @@ export async function ensureDir(directory: string): Promise<void> {
 }
 
 export async function assertPathWithinRoots(filePath: string, roots: string[]): Promise<string> {
-  let resolved: string;
+  let exists = false;
   try {
-    resolved = await realpath(filePath);
-    await stat(resolved);
+    await lstat(filePath);
+    exists = true;
   } catch (error) {
-    throw new TendrilError('FILE_ACCESS_DENIED', `File does not exist or cannot be accessed: ${filePath}`, { cause: error });
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+      throw new TendrilError('FILE_ACCESS_DENIED', `File cannot be accessed: ${filePath}`, { cause: error });
+    }
   }
+
+  let resolved: string;
+  if (exists) {
+    try {
+      resolved = await realpath(filePath);
+      await stat(resolved);
+    } catch (error) {
+      throw new TendrilError('FILE_ACCESS_DENIED', `File cannot be accessed: ${filePath}`, { cause: error });
+    }
+  } else {
+    const dir = path.dirname(filePath);
+    try {
+      resolved = await realpath(dir);
+      await stat(resolved);
+    } catch (error) {
+      throw new TendrilError('FILE_ACCESS_DENIED', `Directory does not exist or cannot be accessed: ${dir}`, { cause: error });
+    }
+  }
+
   for (const root of roots) {
     let resolvedRoot: string;
     try {
@@ -70,11 +91,9 @@ export async function assertPathWithinRoots(filePath: string, roots: string[]): 
       continue;
     }
     const relative = path.relative(resolvedRoot, resolved);
-    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return resolved;
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return exists ? resolved : filePath;
   }
-  throw new TendrilError('FILE_ACCESS_DENIED', 'Path is outside configured workspace roots', {
-    details: { path: filePath },
-  });
+  throw new TendrilError('FILE_ACCESS_DENIED', `File path is outside allowed workspace roots: ${filePath}`);
 }
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
