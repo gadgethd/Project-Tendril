@@ -509,7 +509,6 @@ describe('TendrilSession', () => {
     await expect(session.snapshot({ cursor: first.cursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
   });
 
->>>>>>> ac647b6 (fix(browser): harden snapshot refs and bounds)
   it('exports session state, reports health, and saves downloads inside workspace roots', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-test-'));
     const server = http.createServer((request, response) => {

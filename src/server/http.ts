@@ -7,7 +7,6 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { BrowserManager } from '../browser/manager.js';
 import type { SearchService } from '../browser/search.js';
 import type { CrawlService } from '../browser/crawl.js';
-import { mergeInjectionWarnings } from '../browser/content-safety.js';
 import { asTendrilError } from '../errors.js';
 import { ensureDir, randomToken, type Logger } from '../util.js';
 import { createMcpServer } from './mcp.js';
