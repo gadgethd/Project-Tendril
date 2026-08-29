@@ -19,6 +19,7 @@ import {
 } from '../security/auth.js';
 import { createMcpServer } from './mcp.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { VERSION } from '../version.js';
 
 export interface TendrilHttpServer {
   server: http.Server;
@@ -422,7 +423,7 @@ function publicCdpUrl(
 
 function openApiDocument(port: number): Record<string, unknown> {
   return {
-    openapi: '3.1.0', info: { title: 'Project Tendril API', version: '1.1.0' },
+    openapi: '3.1.0', info: { title: 'Project Tendril API', version: VERSION },
     servers: [{ url: `http://127.0.0.1:${port}` }],
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } }, security: [{ bearerAuth: [] }],
     paths: {

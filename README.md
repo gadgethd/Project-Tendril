@@ -18,7 +18,7 @@ Project Tendril gives MCP clients and autonomous agents a real, isolated Chromiu
 It runs locally, has no embedded LLM, sends no telemetry, and never attaches to your everyday browser profile.
 
 > [!IMPORTANT]
-> Project Tendril does not disguise automation, evade paywalls, or manufacture clearance cookies. It detects common challenge pages and can provide a headed, human-in-the-loop handoff for legitimate access. Automated challenge resolution is supported as an opt-in local capability; see [Challenge handling](#challenge-handling) for details.
+> Project Tendril does not disguise automation, evade paywalls, solve CAPTCHAs, or manufacture clearance cookies. It detects common challenge pages and provides a headed, human-in-the-loop handoff for legitimate access; see [Challenge handling](#challenge-handling).
 
 ## Contents
 
@@ -31,10 +31,12 @@ It runs locally, has no embedded LLM, sends no telemetry, and never attaches to 
 - [MCP tools](#mcp-tools)
 - [REST and CDP](#rest-and-cdp)
 - [Search, research, and crawling](#search-research-and-crawling)
-- [Human challenge handoff](#human-challenge-handoff)
+- [Challenge handling](#challenge-handling)
 - [Configuration](#configuration)
 - [Security model](#security-model)
 - [Docker](#docker)
+- [Deployment and recovery](docs/deployment.md)
+- [Release process](docs/releasing.md)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Project status and roadmap](#project-status-and-roadmap)
@@ -358,11 +360,9 @@ Search providers and websites may rate-limit automated access. Project Tendril r
 
 ## Challenge handling
 
-When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, DuckDuckGo, Google, or an unknown challenge, Project Tendril offers two resolution paths:
+When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, DuckDuckGo, Google, or an unknown challenge, Project Tendril pauses automation for a human handoff. It does not attempt to solve or bypass challenges automatically.
 
-### Human-in-the-loop (manual)
-
-The default path. A human completes the challenge in a headed Chromium window:
+A human completes the challenge in a headed Chromium window:
 
 1. Start Project Tendril with `--headed`, or create the session with `headless: false`.
 2. Call `browser_challenge` with `action: "inspect"`.
@@ -370,27 +370,6 @@ The default path. A human completes the challenge in a headed Chromium window:
 4. A human completes the challenge in Chromium.
 5. Call it with `action: "wait"`; the tool returns when the challenge disappears.
 6. Resume automation in the same session.
-
-### Automated resolution (opt-in)
-
-For headless and agent-driven workflows, automated challenge resolution can be enabled:
-
-```json
-{
-  "challengeAutoSolve": true
-}
-```
-
-Or via environment variable:
-
-```bash
-TENDRIL_CHALLENGE_AUTO_SOLVE=true
-```
-
-When enabled, Project Tendril will attempt to resolve supported challenges automatically using local heuristics. This does not rely on external APIs, CAPTCHA-solving services, or stealth patches. Unsupported challenge types fall back to the human-in-the-loop path.
-
-> [!NOTE]
-> Automated resolution is an opt-in capability. It works best with Turnstile and simpler interstitial challenges. Complex reCAPTCHA or hCaptcha instances may still require human intervention. The feature processes everything locally — no data is sent to third-party solving services.
 
 ### General guidance
 
@@ -482,7 +461,7 @@ These controls are guardrails, not a complete virtual-machine boundary. Use the 
 Build the image:
 
 ```bash
-docker build -t project-tendril:1.0.0 .
+docker build -t project-tendril:local .
 ```
 
 Run Chromium as the image's non-root `tendril` user with a read-only root filesystem and the supplied sandbox-compatible seccomp profile:
@@ -491,14 +470,17 @@ Run Chromium as the image's non-root `tendril` user with a read-only root filesy
 docker run --rm --init \
   --name project-tendril \
   -p 127.0.0.1:3210:3210 \
-  --ipc=host \
+  --shm-size 1g \
+  --memory 2g \
+  --cpus 2 \
+  --pids-limit 512 \
   --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g \
   --security-opt seccomp=seccomp_profile.json \
   --cap-drop ALL \
   --cap-add SYS_CHROOT \
   -e TENDRIL_TOKEN="replace-with-a-long-random-token" \
-  project-tendril:1.0.0
+  project-tendril:local
 ```
 
 The included [seccomp profile](seccomp_profile.json) is Docker's default policy with the user-namespace operations required by Chromium's sandbox. `SYS_CHROOT` is the only retained capability and is also required by the sandbox.
@@ -513,14 +495,17 @@ docker volume create project-tendril-data
 docker run --rm --init \
   --name project-tendril \
   -p 127.0.0.1:3210:3210 \
-  --ipc=host \
+  --shm-size 1g \
+  --memory 2g \
+  --cpus 2 \
+  --pids-limit 512 \
   --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g \
   --security-opt seccomp=seccomp_profile.json \
   --cap-drop ALL \
   --cap-add SYS_CHROOT \
   -v project-tendril-data:/data \
-  project-tendril:1.0.0
+  project-tendril:local
 ```
 
 Do not publish port 3210 beyond loopback without an authenticated TLS reverse proxy and an explicit threat review.
@@ -531,9 +516,7 @@ Do not publish port 3210 beyond loopback without an authenticated TLS reverse pr
 git clone https://github.com/gadgethd/Project-Tendril.git
 cd Project-Tendril
 npm ci
-npm run typecheck
-npm test
-npm run build
+npm run check
 ```
 
 Useful commands:
@@ -542,6 +525,8 @@ Useful commands:
 | --- | --- |
 | `npm run dev -- mcp` | Run the TypeScript source as an MCP server |
 | `npm run dev -- serve` | Run the TypeScript source as the HTTP service |
+| `npm run check` | Run type, lint, format, coverage, build, and package-consumer gates |
+| `npm run test:package` | Pack and install the exact consumer artifact in a temporary project |
 | `npm run typecheck` | Type-check without emitting files |
 | `npm test` | Run the integration test suite once |
 | `npm run test:watch` | Run tests in watch mode |

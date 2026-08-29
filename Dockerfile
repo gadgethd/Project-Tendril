@@ -1,14 +1,19 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
+COPY scripts ./scripts
 RUN npm run build && npm prune --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
+ARG VERSION=dev
+ARG REVISION=unknown
 LABEL org.opencontainers.image.title="Project Tendril" \
       org.opencontainers.image.description="Local-first Chromium browser and web-research runtime for AI agents" \
       org.opencontainers.image.source="https://github.com/gadgethd/Project-Tendril" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="Apache-2.0"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium chromium-sandbox dumb-init ca-certificates \

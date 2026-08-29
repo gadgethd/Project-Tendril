@@ -17,7 +17,7 @@ const program = new Command();
 program
   .name('tendril')
   .description('Local agent-first Chromium browser with MCP, REST, and CDP')
-  .version('1.1.0')
+  .version(VERSION)
   .option('-c, --config <path>', 'configuration JSON path');
 
 program.command('serve')
