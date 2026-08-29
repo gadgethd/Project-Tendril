@@ -330,11 +330,12 @@ export class TendrilSession {
     await page.close({ runBeforeUnload: false });
   }
 
-  async navigate(options: { pageId?: string; url?: string; action?: 'goto' | 'back' | 'forward' | 'reload'; waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'; signal?: AbortSignal }): Promise<{ url: string; title: string; status: number | null }> {
+  async navigate(options: { pageId?: string; url?: string; action?: 'goto' | 'back' | 'forward' | 'reload'; waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'; signal?: AbortSignal; deadlineMs?: number }): Promise<{ url: string; title: string; status: number | null; mimeType?: string }> {
     if (options.signal?.aborted) throw Object.assign(new Error('Navigation was cancelled'), { name: 'AbortError' });
     const page = this.currentPage(options.pageId);
     const action = options.action ?? 'goto';
     let response: Response | null = null;
+    const timeoutMs = boundedTimeout(this.config.navigationTimeoutMs, options.deadlineMs);
     if (action === 'goto') {
       if (!options.url) throw new TendrilError('INVALID_URL', 'url is required for goto');
       let parsed: URL;
@@ -344,7 +345,7 @@ export class TendrilSession {
         throw new TendrilError('NETWORK_BLOCKED', `Navigation protocol ${parsed.protocol} is not allowed`);
       }
       await this.networkPolicy.resolve(parsed.toString(), options.signal);
-      const gotoOptions = { waitUntil: options.waitUntil ?? 'domcontentloaded' } as const;
+      const gotoOptions = { waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs } as const;
       try {
         response = await page.goto(options.url, gotoOptions);
       } catch (error) {
@@ -353,9 +354,9 @@ export class TendrilSession {
         await page.waitForTimeout(100);
         response = await page.goto(options.url, gotoOptions);
       }
-    } else if (action === 'back') response = await page.goBack({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
-    else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
-    else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
+    } else if (action === 'back') response = await page.goBack({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
+    else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
+    else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
     this.refs.clear();
     const contentType = response?.headers()['content-type']?.split(';', 1)[0]?.trim();
     const result: { url: string; title: string; status: number | null; mimeType?: string } = {
@@ -374,7 +375,11 @@ export class TendrilSession {
     return { url: page.url(), title: await page.title() };
   }
 
-  async fetchText(url: string, pageId?: string, signal?: AbortSignal): Promise<{ status: number | null; text: string }> {
+  async fetchText(
+    url: string,
+    pageId?: string,
+    options: { signal?: AbortSignal; deadlineMs?: number; maxBytes?: number; accept?: string } = {},
+  ): Promise<{ status: number | null; text: string; headers: Record<string, string> }> {
     this.currentPage(pageId);
     throwIfAborted(options.signal);
     let target = new URL(url);
@@ -386,9 +391,11 @@ export class TendrilSession {
     }
     const maxBytes = Math.max(1, Math.floor(Math.min(requestedMaxBytes, this.config.maxResponseBodyBytes)));
     for (let redirects = 0; redirects <= 5; redirects += 1) {
-      if (signal?.aborted) throw Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' });
-      await this.networkPolicy.resolve(target.toString(), signal);
-      const result = await new Promise<{ status: number; text: string; location?: string }>((resolve, reject) => {
+      throwIfAborted(options.signal);
+      await this.networkPolicy.resolve(target.toString());
+      throwIfAborted(options.signal);
+      const timeoutMs = boundedTimeout(this.config.navigationTimeoutMs, options.deadlineMs);
+      const result = await new Promise<{ status: number; text: string; headers: Record<string, string>; location?: string }>((resolve, reject) => {
         let settled = false;
         const request = http.request({
           hostname: proxy.hostname,
@@ -456,9 +463,7 @@ export class TendrilSession {
           options.signal?.removeEventListener('abort', onAbort);
           reject(error);
         });
-        const onAbort = (): void => { request.destroy(Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' })); };
-        signal?.addEventListener('abort', onAbort, { once: true });
-        request.once('close', () => signal?.removeEventListener('abort', onAbort));
+        request.once('close', () => options.signal?.removeEventListener('abort', onAbort));
         request.end();
       });
       if (result.location) {

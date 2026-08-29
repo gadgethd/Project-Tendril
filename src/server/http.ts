@@ -51,6 +51,19 @@ export function normalizeHostAuthority(authority: string | undefined): string | 
   }
 }
 
+async function withRequestSignal<T>(request: Request, response: Response, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort(new Error('HTTP client disconnected'));
+  const abortIfUnfinished = (): void => { if (!response.writableFinished) abort(); };
+  request.once('aborted', abort);
+  response.once('close', abortIfUnfinished);
+  try { return await operation(controller.signal); }
+  finally {
+    request.removeListener('aborted', abort);
+    response.removeListener('close', abortIfUnfinished);
+  }
+}
+
 function normalizeConfiguredHost(host: string): string | undefined {
   const authority = isIP(host) === 6 ? `[${host}]` : host;
   return normalizeHostAuthority(authority);
