@@ -933,7 +933,7 @@ export async function launchChromium(options: {
     },
   });
   const windowsLaunchSnapshotPromise = process.platform === 'win32'
-    ? captureWindowsLaunchProcessTree(child, () => listWindowsProcesses({}, 3_000))
+    ? captureWindowsLaunchProcessTree(child, () => listWindowsProcesses({}, 12_000))
     : undefined;
   const windowsRootIdentityPromise = windowsLaunchSnapshotPromise?.then((snapshot) => snapshot.root);
   const windowsExitCleanup = windowsLaunchSnapshotPromise
@@ -954,10 +954,22 @@ export async function launchChromium(options: {
   try {
     const endpoint = await waitForDevTools(options.userDataDir, child);
     if (windowsLaunchSnapshotPromise) {
-      terminationOptions = {
-        windowsRootIdentity: (await windowsLaunchSnapshotPromise).root,
-        windowsExitCleanup: windowsExitCleanup!,
-      };
+      try {
+        const snapshot = await windowsLaunchSnapshotPromise;
+        terminationOptions = {
+          windowsRootIdentity: snapshot.root,
+          windowsExitCleanup: windowsExitCleanup!,
+        };
+      } catch (error) {
+        // The identity snapshot only improves cleanup verification. A cold or
+        // loaded Windows runner can exceed the enumeration budget, and a failed
+        // snapshot must never fail a successfully launched browser: fall back to
+        // direct termination (closeChromiumResources handles the missing
+        // identity with browser close + taskkill).
+        options.logger.warn('Windows launch process-tree snapshot failed; using direct termination fallback', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${endpoint.port}`);
     const context = browser.contexts()[0];

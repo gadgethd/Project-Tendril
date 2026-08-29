@@ -62,6 +62,10 @@ export function formatUrlAuthority(host: string, port: number): string {
 }
 
 export function advertisedHost(configuredHost: string, requestAuthority?: string): string {
+  // codeql[js/user-controlled-bypass] The request Host is normalized (see
+  // normalizeHostAuthority) and only honored when it exactly matches the
+  // configured origin or a loopback address (hostHeaderAllowed). It influences
+  // generated advertisement URLs only — never an authorization decision.
   if (requestAuthority && hostHeaderAllowed(requestAuthority, configuredHost)) {
     return normalizeHostAuthority(requestAuthority)!;
   }
@@ -148,16 +152,25 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
     const cdpMatch = request.path.match(/^\/cdp\/([^/]+)(?:\/|$)/);
     if (cdpMatch) {
       const peer = peerKey(request.socket.remoteAddress);
-      const capability = typeof request.query.capability === 'string' ? request.query.capability : undefined;
-      if (constantTimeTokenEqual(bearerToken(request), token) || verifyCdpCapability(capability, token, cdpMatch[1]!)) {
-        authFailures.reset(peer);
-        cdpAttempts.reset(peer);
-        next();
-        return;
-      }
+      // Rate-limit the authorization flow on every CDP path (CodeQL
+      // js/missing-rate-limiting): attempts accumulate per peer, while a
+      // successful capability proof resets the bucket so legitimate traffic is
+      // never throttled and failures are always bounded.
       const attempt = cdpAttempts.attempt(peer);
       if (!attempt.allowed) {
         setRateLimitedResponse(response, attempt);
+        return;
+      }
+      const capability = typeof request.query.capability === 'string' ? request.query.capability : undefined;
+      // codeql[js/user-controlled-bypass] This IS the authorization gate: the
+      // bearer token is compared in constant time and the CDP capability is an
+      // HMAC-bound short-lived handle verified against the secret. User input
+      // controls which branch runs, but both branches fail closed without the
+      // secret-derived proof.
+      if (constantTimeTokenEqual(bearerToken(request), token) || verifyCdpCapability(capability, token, cdpMatch[1]!)) {
+        cdpAttempts.reset(peer);
+        authFailures.reset(peer);
+        next();
         return;
       }
       rejectAuthentication(request, response, 'Valid Tendril CDP capability required');
