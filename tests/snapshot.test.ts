@@ -5,9 +5,7 @@ import type { Frame, Page } from 'playwright';
 import { createSnapshot } from '../src/browser/snapshot.js';
 import type { SnapshotNode } from '../src/types.js';
 
-const test = process.env.VITEST
-  ? (await import('vitest')).test as unknown as typeof nodeTest
-  : nodeTest;
+const test = process.env.VITEST ? ((await import('vitest')).test as unknown as typeof nodeTest) : nodeTest;
 
 interface TestRawNode {
   role: string;
@@ -127,7 +125,10 @@ test('compact snapshots honor maxDepth, inline a sole text child, and drop empty
   });
 
   assert.ok(depthResult.nodes);
-  assert.equal(depthResult.nodes.some((node) => node.role === 'generic' && !node.name && !node.children?.length), false);
+  assert.equal(
+    depthResult.nodes.some((node) => node.role === 'generic' && !node.name && !node.children?.length),
+    false,
+  );
   assert.ok(!roles(depthResult.nodes).includes('heading'));
   assert.ok(roles(depthResult.nodes).includes('button'));
 });

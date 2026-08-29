@@ -1,7 +1,7 @@
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
-import TurndownService from 'turndown';
 import type { Page } from 'playwright';
+import TurndownService from 'turndown';
 import type { StructuredData } from '../types.js';
 
 export interface ExtractedPage {
@@ -22,10 +22,14 @@ export interface ExtractedPage {
 export async function extractPage(page: Page): Promise<ExtractedPage> {
   const [html, links, metadata, structuredData] = await Promise.all([
     page.content(),
-    page.locator('a[href]').evaluateAll((anchors) => anchors.map((anchor) => ({
-      text: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim(),
-      url: (anchor as HTMLAnchorElement).href,
-    })).filter((entry) => entry.url)),
+    page.locator('a[href]').evaluateAll((anchors) =>
+      anchors
+        .map((anchor) => ({
+          text: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          url: (anchor as HTMLAnchorElement).href,
+        }))
+        .filter((entry) => entry.url),
+    ),
     page.evaluate(() => {
       const result: Record<string, string> = {};
       for (const meta of document.querySelectorAll('meta[name], meta[property]')) {
@@ -50,10 +54,13 @@ export async function extractPage(page: Page): Promise<ExtractedPage> {
   turndown.remove(['script', 'style', 'noscript', 'template']);
   const result: ExtractedPage = {
     url: page.url(),
-    title: article?.title || await page.title(),
+    title: article?.title || (await page.title()),
     html: articleHtml,
     text,
-    markdown: turndown.turndown(articleHtml).replace(/\n{3,}/g, '\n\n').trim(),
+    markdown: turndown
+      .turndown(articleHtml)
+      .replace(/\n{3,}/g, '\n\n')
+      .trim(),
     links,
     metadata,
     structuredData,
@@ -68,12 +75,8 @@ export async function extractPage(page: Page): Promise<ExtractedPage> {
 export async function extractStructured(page: Page): Promise<StructuredData> {
   return page.evaluate(() => {
     const result: StructuredData = {};
-    const isRecord = (value: unknown): value is Record<string, unknown> => (
-      typeof value === 'object' && value !== null && !Array.isArray(value)
-    );
-    const normalize = (value: string | null | undefined): string => (
-      (value ?? '').replace(/\s+/g, ' ').trim()
-    );
+    const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+    const normalize = (value: string | null | undefined): string => (value ?? '').replace(/\s+/g, ' ').trim();
     const elementValue = (element: Element): string => {
       const tag = element.tagName.toLowerCase();
       if (tag === 'meta') return normalize(element.getAttribute('content'));
@@ -149,9 +152,7 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
       const properties: Record<string, unknown> = {};
       for (const propertyElement of scope.querySelectorAll('[itemprop]')) {
         if (propertyElement.parentElement?.closest('[itemscope]') !== scope) continue;
-        const value = propertyElement.hasAttribute('itemscope')
-          ? readMicrodata(propertyElement)
-          : elementValue(propertyElement);
+        const value = propertyElement.hasAttribute('itemscope') ? readMicrodata(propertyElement) : elementValue(propertyElement);
         for (const name of normalize(propertyElement.getAttribute('itemprop')).split(' ').filter(Boolean)) {
           addProperty(properties, name, value);
         }
@@ -159,23 +160,16 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
       if (Object.keys(properties).length > 0) item.properties = properties;
       return item;
     };
-    const microdata = [...document.querySelectorAll('[itemscope]')]
-      .filter((scope) => !scope.hasAttribute('itemprop'))
-      .map(readMicrodata);
+    const microdata = [...document.querySelectorAll('[itemscope]')].filter((scope) => !scope.hasAttribute('itemprop')).map(readMicrodata);
     if (microdata.length > 0) result.microdata = microdata;
 
-    const currencyElements = [
-      ...document.querySelectorAll('[itemprop~="priceCurrency" i], meta[property="product:price:currency" i]'),
-    ];
+    const currencyElements = [...document.querySelectorAll('[itemprop~="priceCurrency" i], meta[property="product:price:currency" i]')];
     const globalCurrency = currencyElements.map(elementValue).find(Boolean) ?? '';
     const inferCurrency = (raw: string, element: Element): string => {
       const localScope = element.closest('[itemscope]');
       const localCurrency = localScope?.querySelector('[itemprop~="priceCurrency" i]');
       const explicit = normalize(
-        element.getAttribute('data-currency')
-        || element.getAttribute('currency')
-        || (localCurrency ? elementValue(localCurrency) : '')
-        || globalCurrency,
+        element.getAttribute('data-currency') || element.getAttribute('currency') || (localCurrency ? elementValue(localCurrency) : '') || globalCurrency,
       );
       if (explicit) return explicit.toUpperCase();
       const code = raw.match(/\b[A-Z]{3}\b/i)?.[0];
@@ -189,14 +183,16 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
       return '';
     };
     const prices: NonNullable<StructuredData['prices']> = [];
-    for (const element of document.querySelectorAll([
-      '[itemprop~="price" i]',
-      'meta[property="product:price:amount" i]',
-      'meta[name="price" i]',
-      '[data-price]',
-      '[class*="price" i]',
-      '[id*="price" i]',
-    ].join(','))) {
+    for (const element of document.querySelectorAll(
+      [
+        '[itemprop~="price" i]',
+        'meta[property="product:price:amount" i]',
+        'meta[name="price" i]',
+        '[data-price]',
+        '[class*="price" i]',
+        '[id*="price" i]',
+      ].join(','),
+    )) {
       const raw = normalize(element.getAttribute('data-price') || elementValue(element));
       const amount = raw.match(/[-+]?(?:\d{1,3}(?:[,\s]\d{3})+|\d+)(?:[.,]\d+)?/)?.[0]?.replace(/\s/g, '');
       if (!amount) continue;
@@ -205,23 +201,18 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
     if (prices.length > 0) result.prices = prices;
 
     const dates: NonNullable<StructuredData['dates']> = [];
-    for (const element of document.querySelectorAll([
-      'time[datetime]',
-      '[itemprop*="date" i]',
-      'meta[property$="_time" i]',
-      'meta[property*="date" i]',
-      'meta[name*="date" i]',
-      '[data-date]',
-    ].join(','))) {
+    for (const element of document.querySelectorAll(
+      ['time[datetime]', '[itemprop*="date" i]', 'meta[property$="_time" i]', 'meta[property*="date" i]', 'meta[name*="date" i]', '[data-date]'].join(','),
+    )) {
       const value = normalize(element.getAttribute('data-date') || elementValue(element));
       if (!value) continue;
       const label = normalize(
-        element.getAttribute('itemprop')
-        || element.getAttribute('property')
-        || element.getAttribute('name')
-        || element.getAttribute('aria-label')
-        || element.getAttribute('title')
-        || element.tagName.toLowerCase(),
+        element.getAttribute('itemprop') ||
+          element.getAttribute('property') ||
+          element.getAttribute('name') ||
+          element.getAttribute('aria-label') ||
+          element.getAttribute('title') ||
+          element.tagName.toLowerCase(),
       );
       dates.push({ value, label, selector: selectorFor(element) });
     }
@@ -240,21 +231,12 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
       }
       if (isRecord(value)) addAuthor(value.name);
     };
-    for (const element of document.querySelectorAll([
-      'meta[name="author" i]',
-      'meta[property="article:author" i]',
-      '[rel~="author" i]',
-      '[itemprop~="author" i]',
-    ].join(','))) {
-      const nameElement = element.hasAttribute('itemscope')
-        ? element.querySelector('[itemprop~="name" i]')
-        : null;
+    for (const element of document.querySelectorAll(
+      ['meta[name="author" i]', 'meta[property="article:author" i]', '[rel~="author" i]', '[itemprop~="author" i]'].join(','),
+    )) {
+      const nameElement = element.hasAttribute('itemscope') ? element.querySelector('[itemprop~="name" i]') : null;
       const tag = element.tagName.toLowerCase();
-      addAuthor(nameElement
-        ? elementValue(nameElement)
-        : tag === 'meta'
-          ? elementValue(element)
-          : normalize(element.textContent) || elementValue(element));
+      addAuthor(nameElement ? elementValue(nameElement) : tag === 'meta' ? elementValue(element) : normalize(element.textContent) || elementValue(element));
     }
     const collectJsonLdAuthors = (value: unknown): void => {
       if (Array.isArray(value)) {
@@ -275,23 +257,29 @@ export async function extractStructured(page: Page): Promise<StructuredData> {
 }
 
 export async function extractForms(page: Page): Promise<unknown[]> {
-  return page.locator('form').evaluateAll((forms) => forms.map((form) => ({
-    action: (form as HTMLFormElement).action,
-    method: (form as HTMLFormElement).method,
-    name: form.getAttribute('name') ?? undefined,
-    fields: [...form.querySelectorAll('input, select, textarea, button')].map((field) => ({
-      tag: field.tagName.toLowerCase(),
-      type: field.getAttribute('type') ?? undefined,
-      name: field.getAttribute('name') ?? undefined,
-      label: field.getAttribute('aria-label') ?? field.getAttribute('placeholder') ?? undefined,
-      value: (field as HTMLInputElement).value ?? undefined,
+  return page.locator('form').evaluateAll((forms) =>
+    forms.map((form) => ({
+      action: (form as HTMLFormElement).action,
+      method: (form as HTMLFormElement).method,
+      name: form.getAttribute('name') ?? undefined,
+      fields: [...form.querySelectorAll('input, select, textarea, button')].map((field) => ({
+        tag: field.tagName.toLowerCase(),
+        type: field.getAttribute('type') ?? undefined,
+        name: field.getAttribute('name') ?? undefined,
+        label: field.getAttribute('aria-label') ?? field.getAttribute('placeholder') ?? undefined,
+        value: (field as HTMLInputElement).value ?? undefined,
+      })),
     })),
-  })));
+  );
 }
 
 export async function extractTables(page: Page): Promise<unknown[]> {
-  return page.locator('table').evaluateAll((tables) => tables.map((table) => ({
-    caption: table.querySelector('caption')?.textContent?.trim(),
-    rows: [...table.querySelectorAll('tr')].map((row) => [...row.querySelectorAll('th,td')].map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')),
-  })));
+  return page.locator('table').evaluateAll((tables) =>
+    tables.map((table) => ({
+      caption: table.querySelector('caption')?.textContent?.trim(),
+      rows: [...table.querySelectorAll('tr')].map((row) =>
+        [...row.querySelectorAll('th,td')].map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? ''),
+      ),
+    })),
+  );
 }

@@ -1,14 +1,21 @@
 import http from 'node:http';
 import https from 'node:https';
-import net from 'node:net';
 import type { AddressInfo } from 'node:net';
-import { NetworkPolicy } from './network-policy.js';
+import net from 'node:net';
 import type { Logger } from '../util.js';
 import { redactUrl } from '../util.js';
+import type { NetworkPolicy } from './network-policy.js';
 
 const HOP_HEADERS = new Set([
-  'connection', 'proxy-connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailer', 'transfer-encoding', 'upgrade',
+  'connection',
+  'proxy-connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
 ]);
 
 export class EgressProxy {
@@ -22,7 +29,10 @@ export class EgressProxy {
   private stopping = false;
   private port?: number;
 
-  constructor(private readonly policy: NetworkPolicy, private readonly logger: Logger) {
+  constructor(
+    private readonly policy: NetworkPolicy,
+    private readonly logger: Logger,
+  ) {
     this.server = http.createServer((request, response) => void this.handleRequest(request, response));
     this.server.on('connect', (request, socket, head) => void this.handleConnect(request, socket as net.Socket, head));
     this.server.on('connection', (socket) => {
@@ -75,25 +85,26 @@ export class EgressProxy {
       const url = new URL(rawUrl);
       const destination = await this.policy.resolve(url.toString(), this.closingController.signal);
       if (this.stopping) throw new Error('Egress proxy is stopping');
-      const headers = Object.fromEntries(
-        Object.entries(request.headers).filter(([key]) => !HOP_HEADERS.has(key.toLowerCase())),
-      );
+      const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !HOP_HEADERS.has(key.toLowerCase())));
       headers.host = url.host;
       const transport = url.protocol === 'https:' ? https : http;
-      const upstream = transport.request({
-        protocol: url.protocol,
-        hostname: destination.address,
-        family: destination.family,
-        servername: url.hostname,
-        port: url.port || undefined,
-        path: `${url.pathname}${url.search}`,
-        method: request.method,
-        headers,
-        agent: url.protocol === 'https:' ? this.httpsAgent : this.httpAgent,
-      }, (upstreamResponse) => {
-        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.statusMessage, upstreamResponse.headers);
-        upstreamResponse.pipe(response);
-      });
+      const upstream = transport.request(
+        {
+          protocol: url.protocol,
+          hostname: destination.address,
+          family: destination.family,
+          servername: url.hostname,
+          port: url.port || undefined,
+          path: `${url.pathname}${url.search}`,
+          method: request.method,
+          headers,
+          agent: url.protocol === 'https:' ? this.httpsAgent : this.httpAgent,
+        },
+        (upstreamResponse) => {
+          response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.statusMessage, upstreamResponse.headers);
+          upstreamResponse.pipe(response);
+        },
+      );
       upstream.on('error', (error) => {
         this.logger.warn('Proxy upstream request failed', { url: redactUrl(rawUrl), error: error.message });
         if (!response.headersSent) response.writeHead(502, { 'content-type': 'text/plain' });
@@ -101,7 +112,9 @@ export class EgressProxy {
       });
       upstream.once('socket', (socket) => this.trackUpstream(socket));
       request.once('aborted', () => upstream.destroy());
-      response.once('close', () => { if (!response.writableEnded) upstream.destroy(); });
+      response.once('close', () => {
+        if (!response.writableEnded) upstream.destroy();
+      });
       request.pipe(upstream);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

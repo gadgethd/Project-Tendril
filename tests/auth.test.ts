@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -77,18 +77,20 @@ describe('HTTP authentication primitives', () => {
   it('rolls back token publication when temporary-link cleanup fails', async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'tendril-auth-cleanup-'));
     let injected = false;
-    await expect(loadOrCreateHttpToken({
-      dataDir,
-      fileOperations: {
-        unlink: async (filePath) => {
-          if (!injected && filePath.endsWith('.tmp')) {
-            injected = true;
-            throw Object.assign(new Error('injected temporary unlink failure'), { code: 'EPERM' });
-          }
-          await unlink(filePath);
+    await expect(
+      loadOrCreateHttpToken({
+        dataDir,
+        fileOperations: {
+          unlink: async (filePath) => {
+            if (!injected && filePath.endsWith('.tmp')) {
+              injected = true;
+              throw Object.assign(new Error('injected temporary unlink failure'), { code: 'EPERM' });
+            }
+            await unlink(filePath);
+          },
         },
-      },
-    })).rejects.toThrow('Unable to create token file');
+      }),
+    ).rejects.toThrow('Unable to create token file');
     expect(injected).toBe(true);
     expect(await readdir(dataDir)).toEqual([]);
   });

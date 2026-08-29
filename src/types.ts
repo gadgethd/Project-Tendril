@@ -194,9 +194,9 @@ export interface LogRecord {
 }
 
 export interface CompactSnapshotOptions {
-  maxDepth?: number;        // default 3 (vs unlimited in interactive)
-  inlineText?: boolean;     // collapse single-child text nodes into parent
-  dropEmpty?: boolean;      // remove containers with no visible content
+  maxDepth?: number; // default 3 (vs unlimited in interactive)
+  inlineText?: boolean; // collapse single-child text nodes into parent
+  dropEmpty?: boolean; // remove containers with no visible content
 }
 
 export interface StructuredData {
@@ -232,7 +232,7 @@ export interface ActivityEntry {
 }
 
 export interface InterceptionRule {
-  urlPattern: string;       // glob pattern
+  urlPattern: string; // glob pattern
   block?: boolean;
   modifyHeaders?: Record<string, string>;
 }

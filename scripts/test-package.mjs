@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +40,11 @@ try {
   await execFileAsync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', path.join(temporaryRoot, filename)], { cwd: consumer });
 
   const packageMetadata = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
-  const imported = await execFileAsync('node', ['--input-type=module', '--eval', "import('project-tendril').then(m => { if (!m.createRuntime) process.exit(2); })"], { cwd: consumer });
+  const imported = await execFileAsync(
+    'node',
+    ['--input-type=module', '--eval', "import('project-tendril').then(m => { if (!m.createRuntime) process.exit(2); })"],
+    { cwd: consumer },
+  );
   if (imported.stderr) process.stderr.write(imported.stderr);
   const cli = await execFileAsync(process.execPath, [path.join(consumer, 'node_modules/project-tendril/dist/cli.js'), '--version'], { cwd: consumer });
   if (cli.stdout.trim() !== packageMetadata.version) {

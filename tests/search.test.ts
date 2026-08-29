@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SearchCache, SearchService } from '../src/browser/search.js';
 import type { BrowserManager } from '../src/browser/manager.js';
+import { SearchCache, SearchService } from '../src/browser/search.js';
 import type { SearchProviderName, SearchResult } from '../src/types.js';
 import { Logger } from '../src/util.js';
 
@@ -50,11 +50,15 @@ function serviceWithProviderSearch(
 describe('SearchService provider health', () => {
   it('tracks availability, failures, timestamps, and average latency per provider', async () => {
     let now = 0;
-    const service = serviceWithProviderSearch(['bing'], async (provider, query) => {
-      now += query === 'working' ? 20 : 40;
-      if (query === 'failing') throw new Error('provider unavailable');
-      return [result('working', provider)];
-    }, () => now);
+    const service = serviceWithProviderSearch(
+      ['bing'],
+      async (provider, query) => {
+        now += query === 'working' ? 20 : 40;
+        if (query === 'failing') throw new Error('provider unavailable');
+        return [result('working', provider)];
+      },
+      () => now,
+    );
 
     await service.search({ query: 'working' });
     await expect(service.search({ query: 'failing' })).rejects.toThrow('All search providers failed');

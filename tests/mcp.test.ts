@@ -9,20 +9,25 @@ import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
 import { createMcpServer } from '../src/server/mcp.js';
 
 let runtime: TendrilRuntime | undefined;
-afterEach(async () => { await runtime?.close(); runtime = undefined; });
+afterEach(async () => {
+  await runtime?.close();
+  runtime = undefined;
+});
 
 describe('MCP server', () => {
   it('lists the complete tool surface and controls Chromium', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-mcp-'));
-    runtime = await createRuntime(await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }));
+    runtime = await createRuntime(
+      await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }),
+    );
     const server = createMcpServer(runtime);
     const client = new Client({ name: 'tendril-tests', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      'browser_session', 'browser_snapshot', 'browser_act', 'browser_search', 'browser_research', 'browser_crawl', 'browser_capture',
-    ]));
+    expect(tools.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(['browser_session', 'browser_snapshot', 'browser_act', 'browser_search', 'browser_research', 'browser_crawl', 'browser_capture']),
+    );
     const created = await client.callTool({ name: 'browser_session', arguments: { action: 'create' } });
     expect(created.isError).not.toBe(true);
     const sessionId = (created.structuredContent as { id: string }).id;

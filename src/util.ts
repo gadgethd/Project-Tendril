@@ -44,20 +44,28 @@ export class Logger {
     process.stderr.write(`${JSON.stringify(record)}\n`);
   }
 
-  debug(message: string, fields?: Record<string, unknown>): void { this.log('debug', message, fields); }
-  info(message: string, fields?: Record<string, unknown>): void { this.log('info', message, fields); }
-  warn(message: string, fields?: Record<string, unknown>): void { this.log('warn', message, fields); }
-  error(message: string, fields?: Record<string, unknown>): void { this.log('error', message, fields); }
+  debug(message: string, fields?: Record<string, unknown>): void {
+    this.log('debug', message, fields);
+  }
+  info(message: string, fields?: Record<string, unknown>): void {
+    this.log('info', message, fields);
+  }
+  warn(message: string, fields?: Record<string, unknown>): void {
+    this.log('warn', message, fields);
+  }
+  error(message: string, fields?: Record<string, unknown>): void {
+    this.log('error', message, fields);
+  }
 }
 
 export function safePathBasename(value: string, label = 'Path component'): string {
   if (
-    value.length === 0
-    || value === '.'
-    || value === '..'
-    || value !== path.posix.basename(value)
-    || value !== path.win32.basename(value)
-    || value.includes('\0')
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    value !== path.posix.basename(value) ||
+    value !== path.win32.basename(value) ||
+    value.includes('\0')
   ) {
     throw new TendrilError('CONFIGURATION_ERROR', `${label} must be a safe filename component`);
   }

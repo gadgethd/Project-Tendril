@@ -9,12 +9,14 @@ describe('runtime doctor', () => {
   it('reports the no-sandbox override as a failed production readiness check', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-doctor-'));
     try {
-      const config = await loadConfig({ overrides: {
-        executablePath: process.execPath,
-        dataDir: path.join(root, 'data'),
-        runtimeDir: path.join(root, 'run'),
-        searchProviders: ['bing'],
-      } });
+      const config = await loadConfig({
+        overrides: {
+          executablePath: process.execPath,
+          dataDir: path.join(root, 'data'),
+          runtimeDir: path.join(root, 'run'),
+          searchProviders: ['bing'],
+        },
+      });
       const checks = await runDoctor(config, { TENDRIL_ALLOW_NO_SANDBOX: 'true' });
       expect(checks.find((check) => check.check === 'Chromium binary')).toMatchObject({ ok: true });
       expect(checks.find((check) => check.check === 'Search providers')).toMatchObject({ ok: true });

@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { constants, type BigIntStats } from 'node:fs';
+import { type BigIntStats, constants } from 'node:fs';
 import { link, lstat, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { TendrilError } from '../errors.js';
@@ -90,12 +90,7 @@ async function readSecureTokenFile(tokenPath: string): Promise<string> {
   }
 }
 
-export function assertStableTokenFileIdentity(
-  before: BigIntStats,
-  opened: BigIntStats,
-  after: BigIntStats,
-  tokenPath: string,
-): void {
+export function assertStableTokenFileIdentity(before: BigIntStats, opened: BigIntStats, after: BigIntStats, tokenPath: string): void {
   if (!before.isFile() || before.isSymbolicLink() || !opened.isFile() || !after.isFile() || after.isSymbolicLink()) {
     throw configurationError(`Token path ${tokenPath} must remain a regular file while it is opened`);
   }
@@ -111,10 +106,7 @@ export function assertStableTokenFileIdentity(
   }
 }
 
-export async function readHttpTokenFromHandle(
-  handle: Awaited<ReturnType<typeof open>>,
-  tokenPath: string,
-): Promise<string> {
+export async function readHttpTokenFromHandle(handle: Awaited<ReturnType<typeof open>>, tokenPath: string): Promise<string> {
   const maximumFileBytes = MAX_TOKEN_BYTES + 2;
   try {
     const metadata = await handle.stat();
@@ -145,11 +137,7 @@ interface TokenFileOperations {
   unlink?: (filePath: string) => Promise<void>;
 }
 
-async function unlinkOwnedPublishedToken(
-  tokenPath: string,
-  candidate: string,
-  unlinkFile: (filePath: string) => Promise<void>,
-): Promise<void> {
+async function unlinkOwnedPublishedToken(tokenPath: string, candidate: string, unlinkFile: (filePath: string) => Promise<void>): Promise<void> {
   try {
     const current = await readSecureTokenFile(tokenPath);
     if (!constantTimeTokenEqual(current, candidate)) {
@@ -161,8 +149,9 @@ async function unlinkOwnedPublishedToken(
     throw error;
   }
   let replacement: string;
-  try { replacement = await readSecureTokenFile(tokenPath); }
-  catch (error) {
+  try {
+    replacement = await readSecureTokenFile(tokenPath);
+  } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
     throw error;
   }
@@ -173,10 +162,7 @@ async function unlinkOwnedPublishedToken(
 
 async function createTokenFileAtomically(tokenPath: string, operations: TokenFileOperations = {}): Promise<void> {
   const candidate = randomToken();
-  const temporaryPath = pathWithinOwnedRoot(
-    path.dirname(tokenPath),
-    `.http-token.${process.pid}.${randomBytes(8).toString('hex')}.tmp`,
-  );
+  const temporaryPath = pathWithinOwnedRoot(path.dirname(tokenPath), `.http-token.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
   const unlinkFile = operations.unlink ?? unlink;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let published = false;
@@ -198,8 +184,11 @@ async function createTokenFileAtomically(tokenPath: string, operations: TokenFil
     operationFailure = error;
   }
   if (handle) {
-    try { await handle.close(); }
-    catch (error) { cleanupFailures.push(error); }
+    try {
+      await handle.close();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
   try {
     await unlinkFile(temporaryPath);
@@ -207,31 +196,28 @@ async function createTokenFileAtomically(tokenPath: string, operations: TokenFil
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) cleanupFailures.push(error);
   }
   if (cleanupFailures.length && published) {
-    try { await unlinkOwnedPublishedToken(tokenPath, candidate, unlinkFile); }
-    catch (error) { cleanupFailures.push(error); }
+    try {
+      await unlinkOwnedPublishedToken(tokenPath, candidate, unlinkFile);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
   if (cleanupFailures.length) {
     // A transient failure may have left the private temporary link behind. Retry
     // after rolling back publication, but retain the original failure so startup
     // cannot silently succeed with an artifact.
-    try { await unlinkFile(temporaryPath); }
-    catch (error) {
+    try {
+      await unlinkFile(temporaryPath);
+    } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) cleanupFailures.push(error);
     }
   }
   if (operationFailure !== undefined || cleanupFailures.length) {
-    throw new AggregateError(
-      [...(operationFailure === undefined ? [] : [operationFailure]), ...cleanupFailures],
-      'Atomic token-file publication failed',
-    );
+    throw new AggregateError([...(operationFailure === undefined ? [] : [operationFailure]), ...cleanupFailures], 'Atomic token-file publication failed');
   }
 }
 
-export async function loadOrCreateHttpToken(options: {
-  configuredToken?: string;
-  dataDir: string;
-  fileOperations?: TokenFileOperations;
-}): Promise<string> {
+export async function loadOrCreateHttpToken(options: { configuredToken?: string; dataDir: string; fileOperations?: TokenFileOperations }): Promise<string> {
   if (options.configuredToken !== undefined) return validateHttpToken(options.configuredToken, 'Configured Tendril HTTP token');
   await ensureDir(options.dataDir);
   const tokenPath = pathWithinOwnedRoot(options.dataDir, 'http-token');
@@ -254,11 +240,7 @@ interface CdpCapabilityPayload {
   expiresAt: number;
 }
 
-export function createCdpCapability(
-  masterToken: string,
-  sessionId: string,
-  options: { now?: number; ttlMs?: number } = {},
-): string {
+export function createCdpCapability(masterToken: string, sessionId: string, options: { now?: number; ttlMs?: number } = {}): string {
   const now = options.now ?? Date.now();
   const ttlMs = options.ttlMs ?? CDP_CAPABILITY_TTL_MS;
   if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > CDP_CAPABILITY_TTL_MS) {
@@ -270,12 +252,7 @@ export function createCdpCapability(
   return `${encoded}.${signature}`;
 }
 
-export function verifyCdpCapability(
-  capability: string | undefined,
-  masterToken: string,
-  expectedSessionId: string,
-  now = Date.now(),
-): boolean {
+export function verifyCdpCapability(capability: string | undefined, masterToken: string, expectedSessionId: string, now = Date.now()): boolean {
   if (!capability || capability.length > 2048) return false;
   const parts = capability.split('.');
   if (parts.length !== 2) return false;
@@ -284,11 +261,13 @@ export function verifyCdpCapability(
   if (!constantTimeTokenEqual(signature, expectedSignature)) return false;
   try {
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<CdpCapabilityPayload>;
-    return payload.version === 1
-      && payload.sessionId === expectedSessionId
-      && Number.isSafeInteger(payload.expiresAt)
-      && (payload.expiresAt as number) > now
-      && (payload.expiresAt as number) <= now + CDP_CAPABILITY_TTL_MS;
+    return (
+      payload.version === 1 &&
+      payload.sessionId === expectedSessionId &&
+      Number.isSafeInteger(payload.expiresAt) &&
+      (payload.expiresAt as number) > now &&
+      (payload.expiresAt as number) <= now + CDP_CAPABILITY_TTL_MS
+    );
   } catch {
     return false;
   }

@@ -19,9 +19,7 @@ function pageForHtml(html: string): Page {
       }
     },
     locator: (selector: string) => ({
-      evaluateAll: async (callback: (elements: Element[]) => unknown) => (
-        callback([...fixtureDocument.querySelectorAll(selector)])
-      ),
+      evaluateAll: async (callback: (elements: Element[]) => unknown) => callback([...fixtureDocument.querySelectorAll(selector)]),
     }),
     title: async () => fixtureDocument.title,
     url: () => 'https://example.test/article',
@@ -71,35 +69,34 @@ describe('structured extraction', () => {
       { '@type': 'Offer', price: '19.95' },
     ]);
     expect(structured.openGraph).toEqual({ title: 'OpenGraph title', type: 'article' });
-    expect(structured.microdata).toEqual([{
-      type: 'https://schema.org/Article',
-      id: 'https://example.test/article',
-      properties: {
-        headline: 'Microdata title',
-        keywords: ['browser', 'automation'],
-        author: {
-          type: 'https://schema.org/Person',
-          properties: { name: 'Microdata Author' },
+    expect(structured.microdata).toEqual([
+      {
+        type: 'https://schema.org/Article',
+        id: 'https://example.test/article',
+        properties: {
+          headline: 'Microdata title',
+          keywords: ['browser', 'automation'],
+          author: {
+            type: 'https://schema.org/Person',
+            properties: { name: 'Microdata Author' },
+          },
+          offers: {
+            type: 'https://schema.org/Offer',
+            properties: { price: '19.95', priceCurrency: 'GBP' },
+          },
+          datePublished: '2026-08-27',
         },
-        offers: {
-          type: 'https://schema.org/Offer',
-          properties: { price: '19.95', priceCurrency: 'GBP' },
-        },
-        datePublished: '2026-08-27',
       },
-    }]);
+    ]);
     expect(structured.prices).toEqual([{ amount: '19.95', currency: 'GBP', selector: '#offer-price' }]);
-    expect(structured.dates).toEqual([{
-      value: '2026-08-27',
-      label: 'datePublished',
-      selector: '#published',
-    }]);
-    expect(structured.authors).toEqual(expect.arrayContaining([
-      'Metadata Author',
-      'Microdata Author',
-      'Byline Author',
-      'Schema Author',
-    ]));
+    expect(structured.dates).toEqual([
+      {
+        value: '2026-08-27',
+        label: 'datePublished',
+        selector: '#published',
+      },
+    ]);
+    expect(structured.authors).toEqual(expect.arrayContaining(['Metadata Author', 'Microdata Author', 'Byline Author', 'Schema Author']));
   });
 
   it('omits empty sections and ignores malformed JSON-LD', async () => {

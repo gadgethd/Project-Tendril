@@ -1,4 +1,4 @@
-import { access, mkdtemp, open, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, open, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -49,15 +49,17 @@ describe('profile filesystem locks', () => {
   it('rolls back a published lock when temporary-link cleanup fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-lock-publish-'));
     let failedTemporaryUnlink = false;
-    await expect(acquireProfileFileLock(root, 'rollback', {
-      unlink: async (...args: Parameters<typeof unlink>) => {
-        if (String(args[0]).endsWith('.tmp') && !failedTemporaryUnlink) {
-          failedTemporaryUnlink = true;
-          throw fsError('EACCES', 'injected temporary unlink failure');
-        }
-        return unlink(...args);
-      },
-    })).rejects.toThrow('publication cleanup failed');
+    await expect(
+      acquireProfileFileLock(root, 'rollback', {
+        unlink: async (...args: Parameters<typeof unlink>) => {
+          if (String(args[0]).endsWith('.tmp') && !failedTemporaryUnlink) {
+            failedTemporaryUnlink = true;
+            throw fsError('EACCES', 'injected temporary unlink failure');
+          }
+          return unlink(...args);
+        },
+      }),
+    ).rejects.toThrow('publication cleanup failed');
     await expect(access(path.join(root, '.profile-locks', 'rollback.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readdir(path.join(root, '.profile-locks'))).toEqual([]);
   });
@@ -65,24 +67,27 @@ describe('profile filesystem locks', () => {
   it('fails acquisition and leaves no published lock when handle close fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-lock-close-'));
     let failedClose = false;
-    await expect(acquireProfileFileLock(root, 'close-failure', {
-      open: async (...args: Parameters<typeof open>) => {
-        const handle = await open(...args);
-        return new Proxy(handle, {
-          get(target, property) {
-            if (property === 'close') return async () => {
-              if (!failedClose) {
-                failedClose = true;
-                throw new Error('injected handle close failure');
-              }
-              return target.close();
-            };
-            const value = Reflect.get(target, property, target) as unknown;
-            return typeof value === 'function' ? value.bind(target) : value;
-          },
-        });
-      },
-    })).rejects.toThrow('Profile lock creation failed');
+    await expect(
+      acquireProfileFileLock(root, 'close-failure', {
+        open: async (...args: Parameters<typeof open>) => {
+          const handle = await open(...args);
+          return new Proxy(handle, {
+            get(target, property) {
+              if (property === 'close')
+                return async () => {
+                  if (!failedClose) {
+                    failedClose = true;
+                    throw new Error('injected handle close failure');
+                  }
+                  return target.close();
+                };
+              const value = Reflect.get(target, property, target) as unknown;
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        },
+      }),
+    ).rejects.toThrow('Profile lock creation failed');
     await expect(access(path.join(root, '.profile-locks', 'close-failure.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

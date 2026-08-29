@@ -10,9 +10,7 @@ import { BrowserManager } from '../src/browser/manager.js';
 import type { TendrilSession } from '../src/browser/session.js';
 import { loadConfig } from '../src/config.js';
 import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
-import {
-  advertisedHost, formatUrlAuthority, hostHeaderAllowed, normalizeHostAuthority, startHttpServer, type TendrilHttpServer,
-} from '../src/server/http.js';
+import { advertisedHost, formatUrlAuthority, hostHeaderAllowed, normalizeHostAuthority, startHttpServer, type TendrilHttpServer } from '../src/server/http.js';
 import { Logger } from '../src/util.js';
 
 let runtime: TendrilRuntime | undefined;
@@ -83,13 +81,15 @@ describe('HTTP and CDP interfaces', () => {
     });
     await new Promise<void>((resolve) => backend.listen(0, '127.0.0.1', resolve));
     const backendPort = (backend.address() as AddressInfo).port;
-    const config = await loadConfig({ overrides: {
-      port: 0,
-      token,
-      dataDir: path.join(root, 'data'),
-      runtimeDir: path.join(root, 'run'),
-      logLevel: 'error',
-    } });
+    const config = await loadConfig({
+      overrides: {
+        port: 0,
+        token,
+        dataDir: path.join(root, 'data'),
+        runtimeDir: path.join(root, 'run'),
+        logLevel: 'error',
+      },
+    });
     const manager = {
       config,
       activeCount: () => 0,
@@ -122,9 +122,15 @@ describe('HTTP and CDP interfaces', () => {
   it('awaits quick-route lease cleanup before committing success and aggregates dual failures', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-http-quick-cleanup-'));
     const token = 'q'.repeat(32);
-    const config = await loadConfig({ overrides: {
-      port: 0, token, dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), logLevel: 'error',
-    } });
+    const config = await loadConfig({
+      overrides: {
+        port: 0,
+        token,
+        dataDir: path.join(root, 'data'),
+        runtimeDir: path.join(root, 'run'),
+        logLevel: 'error',
+      },
+    });
     let mode: 'success' | 'cleanup-failure' | 'dual-failure' = 'success';
     const release = vi.fn(async () => {
       if (mode !== 'success') throw new Error('injected lease cleanup failure');
@@ -166,9 +172,16 @@ describe('HTTP and CDP interfaces', () => {
 
   it('accepts an IPv6 loopback Host authority and bounds repeated authentication failures', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-http-auth-limit-'));
-    runtime = await createRuntime(await loadConfig({ overrides: {
-      port: 0, dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), logLevel: 'error',
-    } }));
+    runtime = await createRuntime(
+      await loadConfig({
+        overrides: {
+          port: 0,
+          dataDir: path.join(root, 'data'),
+          runtimeDir: path.join(root, 'run'),
+          logLevel: 'error',
+        },
+      }),
+    );
     httpServer = await startHttpServer({ ...runtime });
     const base = `http://127.0.0.1:${httpServer.port}`;
     expect((await fetch(`${base}/health`, { headers: { host: `[::1]:${httpServer.port}` } })).status).toBe(200);
@@ -177,53 +190,78 @@ describe('HTTP and CDP interfaces', () => {
       expect((await fetch(`${base}/v1/sessions`)).status).toBe(401);
     }
     expect((await fetch(`${base}/v1/sessions`)).status).toBe(429);
-    expect((await fetch(`${base}/v1/sessions`, {
-      headers: { authorization: `Bearer ${httpServer.token}` },
-    })).status).toBe(200);
+    expect(
+      (
+        await fetch(`${base}/v1/sessions`, {
+          headers: { authorization: `Bearer ${httpServer.token}` },
+        })
+      ).status,
+    ).toBe(200);
     expect((await fetch(`${base}/v1/sessions`)).status).toBe(401);
 
     for (let attempt = 0; attempt < 75; attempt += 1) {
-      expect((await fetch(`${base}/cdp/missing/json/version`, {
-        headers: { authorization: `Bearer ${httpServer.token}` },
-      })).status).toBe(404);
+      expect(
+        (
+          await fetch(`${base}/cdp/missing/json/version`, {
+            headers: { authorization: `Bearer ${httpServer.token}` },
+          })
+        ).status,
+      ).toBe(404);
     }
     for (let attempt = 0; attempt < 10; attempt += 1) {
       expect((await fetch(`${base}/cdp/missing/json/version`)).status).toBe(401);
     }
     expect((await fetch(`${base}/cdp/missing/json/version`)).status).toBe(429);
-    expect((await fetch(`${base}/cdp/missing/json/version`, {
-      headers: { authorization: `Bearer ${httpServer.token}` },
-    })).status).toBe(404);
+    expect(
+      (
+        await fetch(`${base}/cdp/missing/json/version`, {
+          headers: { authorization: `Bearer ${httpServer.token}` },
+        })
+      ).status,
+    ).toBe(404);
     expect((await fetch(`${base}/cdp/missing/json/version`)).status).toBe(401);
   });
 
   it('advertises validated request hosts while wildcard listener URLs remain connectable', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-http-advertised-host-'));
     const token = 'a'.repeat(32);
-    const config = await loadConfig({ overrides: {
-      host: '0.0.0.0', port: 0, token,
-      dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), logLevel: 'error',
-    } });
+    const config = await loadConfig({
+      overrides: {
+        host: '0.0.0.0',
+        port: 0,
+        token,
+        dataDir: path.join(root, 'data'),
+        runtimeDir: path.join(root, 'run'),
+        logLevel: 'error',
+      },
+    });
     const session = { id: 'ses_advertised', chromium: { browserPath: '/devtools/browser/id' } } as unknown as { id: string };
     const manager = {
       config,
       activeCount: () => 1,
-      list: vi.fn(async (cdpUrlFor?: (value: typeof session) => string) => [{
-        id: session.id,
-        cdpUrl: cdpUrlFor?.(session),
-      }]),
+      list: vi.fn(async (cdpUrlFor?: (value: typeof session) => string) => [
+        {
+          id: session.id,
+          cdpUrl: cdpUrlFor?.(session),
+        },
+      ]),
     } as unknown as BrowserManager;
     httpServer = await startHttpServer({ manager, search: {} as never, crawl: {} as never, logger: new Logger('error') });
     expect(new URL(httpServer.dashboardUrl).hostname).toBe('127.0.0.1');
     const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const request = http.get({
-        hostname: '127.0.0.1', port: httpServer!.port, path: '/v1/sessions',
-        headers: { host: `192.168.1.20:${httpServer!.port}`, authorization: `Bearer ${token}` },
-      }, (incoming) => {
-        const chunks: Buffer[] = [];
-        incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
-        incoming.once('end', () => resolve({ status: incoming.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
-      });
+      const request = http.get(
+        {
+          hostname: '127.0.0.1',
+          port: httpServer!.port,
+          path: '/v1/sessions',
+          headers: { host: `192.168.1.20:${httpServer!.port}`, authorization: `Bearer ${token}` },
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
+          incoming.once('end', () => resolve({ status: incoming.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
       request.once('error', reject);
     });
     expect(response.status).toBe(200);
@@ -233,7 +271,9 @@ describe('HTTP and CDP interfaces', () => {
 
   it('serves REST quick actions and an authenticated raw CDP endpoint', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-http-'));
-    runtime = await createRuntime(await loadConfig({ overrides: { port: 0, dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }));
+    runtime = await createRuntime(
+      await loadConfig({ overrides: { port: 0, dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }),
+    );
     httpServer = await startHttpServer({ ...runtime });
     const base = `http://127.0.0.1:${httpServer.port}`;
     const auth = { authorization: `Bearer ${httpServer.token}`, 'content-type': 'application/json' };
@@ -241,18 +281,26 @@ describe('HTTP and CDP interfaces', () => {
     expect((await fetch(`${base}/dashboard`)).status).toBe(200);
     expect((await fetch(`${base}/openapi.json`)).status).toBe(401);
     expect((await fetch(`${base}/metrics`)).status).toBe(401);
-    expect((await fetch(`${base}/mcp`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-    })).status).toBe(401);
+    expect(
+      (
+        await fetch(`${base}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+        })
+      ).status,
+    ).toBe(401);
     expect((await fetch(`${base}/v1/sessions`)).status).toBe(401);
     expect((await fetch(`${base}/v1/sessions`, { headers: { authorization: 'Bearer invalid-token' } })).status).toBe(401);
     const createdResponse = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ profile: 'quick-route-profile' }) });
     expect(createdResponse.status).toBe(201);
-    const created = await createdResponse.json() as { id: string };
-    await fetch(`${base}/v1/sessions/${created.id}/content`, { method: 'POST', headers: auth, body: JSON.stringify({ html: '<title>CDP fixture</title><h1>Hello CDP</h1>' }) });
-    const sessions = await (await fetch(`${base}/v1/sessions`, { headers: auth })).json() as { sessions: Array<{ cdpUrl: string }> };
+    const created = (await createdResponse.json()) as { id: string };
+    await fetch(`${base}/v1/sessions/${created.id}/content`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ html: '<title>CDP fixture</title><h1>Hello CDP</h1>' }),
+    });
+    const sessions = (await (await fetch(`${base}/v1/sessions`, { headers: auth })).json()) as { sessions: Array<{ cdpUrl: string }> };
     expect(sessions.sessions[0]!.cdpUrl).not.toContain(httpServer.token);
     expect(new URL(sessions.sessions[0]!.cdpUrl!).searchParams.has('capability')).toBe(true);
     const unprivilegedCdpUrl = new URL(sessions.sessions[0]!.cdpUrl!);
@@ -262,7 +310,9 @@ describe('HTTP and CDP interfaces', () => {
     const browser = await chromium.connectOverCDP(sessions.sessions[0]!.cdpUrl!);
     expect(await browser.contexts()[0]!.pages()[0]!.title()).toBe('CDP fixture');
     await browser.close();
-    const snapshot = await (await fetch(`${base}/v1/sessions/${created.id}/snapshot`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'full' }) })).json() as { content: string };
+    const snapshot = (await (
+      await fetch(`${base}/v1/sessions/${created.id}/snapshot`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'full' }) })
+    ).json()) as { content: string };
     expect(snapshot.content).toContain('Hello CDP');
 
     const quick = await fetch(`${base}/v1/content`, {
@@ -281,13 +331,15 @@ describe('HTTP and CDP interfaces', () => {
     const finishBorrower = deferred<void>();
     const close = vi.fn(async () => undefined);
     const logger = new Logger('error');
-    const config = await loadConfig({ overrides: {
-      port: 0,
-      dataDir: path.join(root, 'data'),
-      runtimeDir: path.join(root, 'run'),
-      maxSessions: 1,
-      logLevel: 'error',
-    } });
+    const config = await loadConfig({
+      overrides: {
+        port: 0,
+        dataDir: path.join(root, 'data'),
+        runtimeDir: path.join(root, 'run'),
+        maxSessions: 1,
+        logLevel: 'error',
+      },
+    });
     const factory = vi.fn(async (options: Parameters<typeof TendrilSession.create>[0]) => {
       await launch.promise;
       return {
@@ -323,11 +375,15 @@ describe('HTTP and CDP interfaces', () => {
     const acquire = vi.spyOn(testManager, 'acquire');
 
     const creatorRequest = fetch(`${base}/v1/content`, {
-      method: 'POST', headers, body: JSON.stringify({ profile: 'shared', html: '<p>creator</p>' }),
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ profile: 'shared', html: '<p>creator</p>' }),
     });
     await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(1));
     const borrowerRequest = fetch(`${base}/v1/content`, {
-      method: 'POST', headers, body: JSON.stringify({ profile: 'shared', html: '<p>borrower</p>' }),
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ profile: 'shared', html: '<p>borrower</p>' }),
     });
     await vi.waitFor(() => expect(acquire).toHaveBeenCalledTimes(2));
     launch.resolve();

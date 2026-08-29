@@ -1,11 +1,5 @@
 import { TendrilError } from '../errors.js';
-import type {
-  EvidenceChunk,
-  SearchProviderHealth,
-  SearchProviderName,
-  SearchRateLimit,
-  SearchResult,
-} from '../types.js';
+import type { EvidenceChunk, SearchProviderHealth, SearchProviderName, SearchRateLimit, SearchResult } from '../types.js';
 import type { Logger } from '../util.js';
 import type { BrowserManager } from './manager.js';
 import type { TendrilSession } from './session.js';
@@ -237,10 +231,9 @@ export class SearchService {
 
     if (!options.provider && providers.length >= 2) {
       const pending = new Map(
-        providers.slice(0, 2).map((provider, index) => [
-          index,
-          this.tryProvider(options.query, provider, maxResults).then((attempt) => ({ ...attempt, index })),
-        ]),
+        providers
+          .slice(0, 2)
+          .map((provider, index) => [index, this.tryProvider(options.query, provider, maxResults).then((attempt) => ({ ...attempt, index }))]),
       );
       while (pending.size > 0) {
         const attempt = await Promise.race(pending.values());
@@ -290,9 +283,7 @@ export class SearchService {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn('Search provider failed', { provider, error: message });
       const rateLimit = rateLimitFromError(error, provider);
-      return rateLimit
-        ? { ok: false, provider, error: message, rateLimit }
-        : { ok: false, provider, error: message };
+      return rateLimit ? { ok: false, provider, error: message, rateLimit } : { ok: false, provider, error: message };
     }
   }
 
@@ -368,30 +359,39 @@ export class SearchService {
       if (provider === 'duckduckgo') parsed = await this.searchDuckDuckGo(session, query);
       else if (provider === 'google') parsed = await this.searchGoogle(session, query, maxResults);
       else {
-        const navigation = await session.navigate({ url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl), waitUntil: 'domcontentloaded' });
+        const navigation = await session.navigate({
+          url: searchUrl(provider, query, searxngUrl ?? this.manager.config.searxngUrl),
+          waitUntil: 'domcontentloaded',
+        });
         if (navigation.status === 429) throw new ProviderRateLimitError({ provider });
         await session.wait({ delayMs: 500 });
         const pageInfo = (await session.listPages()).find((page) => page.selected);
         if (!pageInfo) return [];
         const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
         if (provider === 'bing') {
-          parsed = await page.locator('item').evaluateAll((nodes) => nodes.map((node) => ({
-            title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-            url: node.querySelector('link')?.textContent?.trim() ?? '',
-            snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          })));
+          parsed = await page.locator('item').evaluateAll((nodes) =>
+            nodes.map((node) => ({
+              title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+              url: node.querySelector('link')?.textContent?.trim() ?? '',
+              snippet: node.querySelector('description')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            })),
+          );
         } else if (provider === 'searxng') {
-          parsed = await page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-            title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-            url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
-            snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-          })));
+          parsed = await page.locator('.result').evaluateAll((nodes) =>
+            nodes.map((node) => ({
+              title: node.querySelector('h3, h4')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+              url: (node.querySelector('a') as HTMLAnchorElement | null)?.href ?? '',
+              snippet: node.querySelector('.content, p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+            })),
+          );
         } else {
-          parsed = await page.locator('a:has(h3)').evaluateAll((nodes) => nodes.map((node) => ({
-            title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-            url: (node as HTMLAnchorElement).href,
-            snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
-          })));
+          parsed = await page.locator('a:has(h3)').evaluateAll((nodes) =>
+            nodes.map((node) => ({
+              title: node.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+              url: (node as HTMLAnchorElement).href,
+              snippet: node.parentElement?.parentElement?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 500) ?? '',
+            })),
+          );
         }
       }
       const seen = new Set<string>();
@@ -432,11 +432,13 @@ export class SearchService {
       const pageInfo = (await session.listPages()).find((page) => page.selected);
       if (!pageInfo) return [];
       const page = session.chromium.context.pages().find((item) => item.url() === pageInfo.url) ?? session.chromium.context.pages()[0]!;
-      return page.locator('.result').evaluateAll((nodes) => nodes.map((node) => ({
-        title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-        url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
-        snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-      })));
+      return page.locator('.result').evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
+          snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+        })),
+      );
     }
   }
 
@@ -457,8 +459,11 @@ export class SearchService {
       const response = await session.fetchText(url.toString());
       if (response.status === 429) throw new ProviderRateLimitError({ provider: 'google' });
       let payload: unknown;
-      try { payload = JSON.parse(response.text) as unknown; }
-      catch (error) { throw new Error('Google Custom Search API returned invalid JSON', { cause: error }); }
+      try {
+        payload = JSON.parse(response.text) as unknown;
+      } catch (error) {
+        throw new Error('Google Custom Search API returned invalid JSON', { cause: error });
+      }
       if (!isRecord(payload)) throw new Error('Google Custom Search API returned an invalid response');
       if (response.status === null || response.status < 200 || response.status >= 300) {
         const apiError = isRecord(payload.error) ? stringField(payload.error, 'message') : '';
@@ -478,14 +483,20 @@ export class SearchService {
     return parsed;
   }
 
-  async research(options: { queries: string[]; maxResultsPerQuery?: number; maxSources?: number }): Promise<{ queries: string[]; sources: SearchResult[]; evidence: EvidenceChunk[] }> {
+  async research(options: {
+    queries: string[];
+    maxResultsPerQuery?: number;
+    maxSources?: number;
+  }): Promise<{ queries: string[]; sources: SearchResult[]; evidence: EvidenceChunk[] }> {
     const allResults: SearchResult[] = [];
     for (const query of options.queries.slice(0, 10)) {
       const searched = await this.search({ query, maxResults: options.maxResultsPerQuery ?? 5 });
       allResults.push(...searched.results);
     }
-    const deduplicated = [...new Map(allResults.map((item) => [normalizeResultUrl(item.url) ?? item.url, item])).values()]
-      .slice(0, Math.min(options.maxSources ?? 10, 30));
+    const deduplicated = [...new Map(allResults.map((item) => [normalizeResultUrl(item.url) ?? item.url, item])).values()].slice(
+      0,
+      Math.min(options.maxSources ?? 10, 30),
+    );
     const evidence = await this.fetchEvidence(deduplicated, options.queries.join(' | '));
     return { queries: options.queries, sources: deduplicated, evidence };
   }
@@ -497,8 +508,11 @@ export class SearchService {
       try {
         session = await this.manager.create();
         await session.navigate({ url: result.url, waitUntil: 'domcontentloaded' });
-        const extracted = await session.extract({ format: 'all' }) as { title: string; markdown: string };
-        const chunks = extracted.markdown.split(/\n{2,}/).map((text) => text.trim()).filter((text) => text.length >= 80);
+        const extracted = (await session.extract({ format: 'all' })) as { title: string; markdown: string };
+        const chunks = extracted.markdown
+          .split(/\n{2,}/)
+          .map((text) => text.trim())
+          .filter((text) => text.length >= 80);
         for (const text of chunks.slice(0, 5)) {
           evidence.push({ sourceUrl: result.url, title: extracted.title || result.title, text: text.slice(0, 2500), query });
         }

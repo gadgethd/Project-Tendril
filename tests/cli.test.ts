@@ -18,9 +18,7 @@ describe('profile CLI administration', () => {
     await writeFile(path.join(profileDir, 'sentinel'), 'preserve while locked');
     await writeFile(configPath, JSON.stringify({ dataDir, runtimeDir: path.join(root, 'run') }));
     const lock = await acquireProfileFileLock(dataDir, 'active');
-    const args = [
-      '--import', 'tsx', path.resolve('src/cli.ts'), '--config', configPath, 'profiles', 'delete', 'active',
-    ];
+    const args = ['--import', 'tsx', path.resolve('src/cli.ts'), '--config', configPath, 'profiles', 'delete', 'active'];
 
     let stderr = '';
     try {

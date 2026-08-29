@@ -46,34 +46,29 @@ function fakeSession(options: FactoryOptions, close = vi.fn(async () => undefine
   } as unknown as TendrilSession;
 }
 
-async function managerFor(
-  root: string,
-  maxSessions: number,
-  factory: (options: FactoryOptions) => Promise<TendrilSession>,
-): Promise<BrowserManager> {
-  const config = await loadConfig({ overrides: {
-    dataDir: path.join(root, 'data'),
-    runtimeDir: path.join(root, 'run'),
-    maxSessions,
-    logLevel: 'error',
-  } });
+async function managerFor(root: string, maxSessions: number, factory: (options: FactoryOptions) => Promise<TendrilSession>): Promise<BrowserManager> {
+  const config = await loadConfig({
+    overrides: {
+      dataDir: path.join(root, 'data'),
+      runtimeDir: path.join(root, 'run'),
+      maxSessions,
+      logLevel: 'error',
+    },
+  });
   const manager = new BrowserManager(config, new Logger('error'), factory);
   await manager.start();
   return manager;
 }
 
 describe('BrowserManager lifecycle', () => {
-  it.each(['foo.', 'CON', 'nul.txt', 'COM1', 'lPt9.backup'])(
-    'rejects the non-portable profile name %s before touching the filesystem',
-    async (profile) => {
-      const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-profile-name-'));
-      const factory = vi.fn(async (options: FactoryOptions) => fakeSession(options));
-      const manager = await managerFor(root, 1, factory);
-      await expect(manager.create({ profile })).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' });
-      expect(factory).not.toHaveBeenCalled();
-      await manager.closeAll();
-    },
-  );
+  it.each(['foo.', 'CON', 'nul.txt', 'COM1', 'lPt9.backup'])('rejects the non-portable profile name %s before touching the filesystem', async (profile) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-profile-name-'));
+    const factory = vi.fn(async (options: FactoryOptions) => fakeSession(options));
+    const manager = await managerFor(root, 1, factory);
+    await expect(manager.create({ profile })).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' });
+    expect(factory).not.toHaveBeenCalled();
+    await manager.closeAll();
+  });
 
   it('reserves capacity before asynchronous launch', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-limit-'));
@@ -149,7 +144,9 @@ describe('BrowserManager lifecycle', () => {
   it('never removes a persistent profile when creation fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-persist-'));
     const profileDir = path.join(root, 'data', 'profiles', 'durable');
-    const manager = await managerFor(root, 1, async () => { throw new Error('injected launch failure'); });
+    const manager = await managerFor(root, 1, async () => {
+      throw new Error('injected launch failure');
+    });
     await mkdir(profileDir, { recursive: true });
     await writeFile(path.join(profileDir, 'sentinel'), 'keep me');
     await expect(manager.create({ profile: 'durable' })).rejects.toThrow('injected launch failure');
@@ -257,10 +254,14 @@ describe('BrowserManager lifecycle', () => {
 
   it('retains a named-profile lock when session cleanup cannot be verified', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-retained-lock-'));
-    const firstManager = await managerFor(root, 1, async (options) => fakeSession(
-      options,
-      vi.fn(async () => { throw new Error('injected termination failure'); }),
-    ));
+    const firstManager = await managerFor(root, 1, async (options) =>
+      fakeSession(
+        options,
+        vi.fn(async () => {
+          throw new Error('injected termination failure');
+        }),
+      ),
+    );
     const secondManager = await managerFor(root, 1, async (options) => fakeSession(options));
     const session = await firstManager.create({ profile: 'retained' });
     await expect(firstManager.close(session.id)).rejects.toThrow('injected termination failure');

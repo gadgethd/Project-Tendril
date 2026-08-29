@@ -1,16 +1,24 @@
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  captureExitedWindowsProcessTree, captureWindowsLaunchProcessTree, captureWindowsProcessTree,
-  closeChromiumResources, launchChromium, runBoundedHelper,
-  terminateFailedChromiumLaunch, terminateProcessTree, trackPosixProcessGroup,
-  trackWindowsProcessTree, WINDOWS_PROCESS_LIST_SCRIPT, windowsTaskkillArguments,
+  captureExitedWindowsProcessTree,
+  captureWindowsLaunchProcessTree,
+  captureWindowsProcessTree,
+  closeChromiumResources,
+  launchChromium,
+  runBoundedHelper,
+  terminateFailedChromiumLaunch,
+  terminateProcessTree,
+  trackPosixProcessGroup,
+  trackWindowsProcessTree,
+  WINDOWS_PROCESS_LIST_SCRIPT,
+  windowsTaskkillArguments,
 } from '../src/browser/chromium.js';
 import { TendrilSession } from '../src/browser/session.js';
 import { Logger } from '../src/util.js';
@@ -24,8 +32,12 @@ describe('runtime resource cleanup', () => {
       });
       let stdout = '';
       let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.stdout.on('data', (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
       const watchdog = setTimeout(() => {
         child.kill('SIGKILL');
         reject(new Error(`Node probe did not exit: ${stdout}${stderr}`));
@@ -65,17 +77,23 @@ describe('runtime resource cleanup', () => {
       creationDate: createdAt(index),
     })).reverse();
     const snapshot = captureWindowsProcessTree(rootPid, records, {
-      pid: rootPid, parentPid: 1, creationDate: createdAt(0),
+      pid: rootPid,
+      parentPid: 1,
+      creationDate: createdAt(0),
     });
     expect(snapshot.descendants).toHaveLength(65_535);
-    expect(() => captureWindowsProcessTree(rootPid, [
-      { pid: rootPid, parentPid: 1, creationDate: createdAt(0) },
-      { pid: rootPid, parentPid: 2, creationDate: createdAt(1) },
-    ])).toThrow('duplicate PID');
-    expect(() => captureWindowsProcessTree(rootPid, [
-      { pid: rootPid, parentPid: 1, creationDate: createdAt(10) },
-      { pid: rootPid + 1, parentPid: rootPid, creationDate: createdAt(5) },
-    ])).toThrow('predates its reported parent');
+    expect(() =>
+      captureWindowsProcessTree(rootPid, [
+        { pid: rootPid, parentPid: 1, creationDate: createdAt(0) },
+        { pid: rootPid, parentPid: 2, creationDate: createdAt(1) },
+      ]),
+    ).toThrow('duplicate PID');
+    expect(() =>
+      captureWindowsProcessTree(rootPid, [
+        { pid: rootPid, parentPid: 1, creationDate: createdAt(10) },
+        { pid: rootPid + 1, parentPid: rootPid, creationDate: createdAt(5) },
+      ]),
+    ).toThrow('predates its reported parent');
   });
 
   it('uses verified platform-specific process-tree termination strategies', async () => {
@@ -109,7 +127,9 @@ describe('runtime resource cleanup', () => {
       windowsChild.emit('exit', 1, null);
     });
     await terminateProcessTree(windowsChild, {
-      platform: 'win32', taskkill, forceTimeoutMs: 100,
+      platform: 'win32',
+      taskkill,
+      forceTimeoutMs: 100,
       windowsProcessList: async () => windowsProcesses,
       windowsRootIdentity: { pid: 202, parentPid: 1, creationDate: createdAt(0) },
     });
@@ -120,16 +140,22 @@ describe('runtime resource cleanup', () => {
     const child = fakeChild(250);
     Object.assign(child, { exitCode: 0 });
     const signalPosixGroup = vi.fn();
-    await expect(terminateProcessTree(child, {
-      platform: 'linux', signalPosixGroup, posixGroupAlive: () => true,
-    })).rejects.toThrow('potentially reused process group');
+    await expect(
+      terminateProcessTree(child, {
+        platform: 'linux',
+        signalPosixGroup,
+        posixGroupAlive: () => true,
+      }),
+    ).rejects.toThrow('potentially reused process group');
     expect(signalPosixGroup).not.toHaveBeenCalled();
   });
 
   it('captures POSIX group-probe errors without throwing from the child exit listener', async () => {
     const child = fakeChild(260);
     const cleanup = trackPosixProcessGroup(child, {
-      posixGroupAlive: () => { throw Object.assign(new Error('probe denied'), { code: 'EPERM' }); },
+      posixGroupAlive: () => {
+        throw Object.assign(new Error('probe denied'), { code: 'EPERM' });
+      },
     });
     Object.assign(child, { exitCode: 1 });
     expect(() => child.emit('exit', 1, null)).not.toThrow();
@@ -154,8 +180,12 @@ describe('runtime resource cleanup', () => {
       }, 25);
     });
     await closeChromiumResources({ close: browserClose }, child, {
-      platform: 'linux', gracefulTimeoutMs: 100, forceTimeoutMs: 100,
-      posixGroupAlive: () => groupAlive, signalPosixGroup, posixExitCleanup,
+      platform: 'linux',
+      gracefulTimeoutMs: 100,
+      forceTimeoutMs: 100,
+      posixGroupAlive: () => groupAlive,
+      signalPosixGroup,
+      posixExitCleanup,
     });
     expect(signalPosixGroup).not.toHaveBeenCalled();
   });
@@ -174,13 +204,20 @@ describe('runtime resource cleanup', () => {
       Object.assign(child, { exitCode: 0 });
       child.emit('exit', 0, null);
     });
-    await closeChromiumResources({
-      close: browserClose,
-      newBrowserCDPSession: vi.fn(async () => ({ send: cdpSend }) as never),
-    }, child, {
-      platform: 'win32', taskkill, windowsProcessList: async () => processes, forceTimeoutMs: 100,
-      windowsRootIdentity: { pid: 301, parentPid: 1, creationDate: createdAt(0) },
-    });
+    await closeChromiumResources(
+      {
+        close: browserClose,
+        newBrowserCDPSession: vi.fn(async () => ({ send: cdpSend }) as never),
+      },
+      child,
+      {
+        platform: 'win32',
+        taskkill,
+        windowsProcessList: async () => processes,
+        forceTimeoutMs: 100,
+        windowsRootIdentity: { pid: 301, parentPid: 1, creationDate: createdAt(0) },
+      },
+    );
     expect(browserClose).toHaveBeenCalledOnce();
     expect(cdpSend).toHaveBeenCalledWith('Browser.close');
     expect(taskkill).not.toHaveBeenCalled();
@@ -212,25 +249,25 @@ describe('runtime resource cleanup', () => {
     expect(taskkill).toHaveBeenCalledOnce();
     expect(taskkill).not.toHaveBeenCalledWith(901);
 
-    expect(() => captureExitedWindowsProcessTree(launchSnapshot, [
-      { pid: 901, parentPid: 1, creationDate: createdAt(0) },
-      { pid: 903, parentPid: 901, creationDate: new Date(Date.parse(createdAt(0)) - 1).toISOString() },
-    ], Date.now())).toThrow('predates its reported parent');
+    expect(() =>
+      captureExitedWindowsProcessTree(
+        launchSnapshot,
+        [
+          { pid: 901, parentPid: 1, creationDate: createdAt(0) },
+          { pid: 903, parentPid: 901, creationDate: new Date(Date.parse(createdAt(0)) - 1).toISOString() },
+        ],
+        Date.now(),
+      ),
+    ).toThrow('predates its reported parent');
   });
 
   it('never captures or taskkills children of a reused Windows root PID', async () => {
-    const launchSnapshot = captureWindowsProcessTree(901, [
-      { pid: 901, parentPid: 1, creationDate: createdAt(0) },
-    ]);
+    const launchSnapshot = captureWindowsProcessTree(901, [{ pid: 901, parentPid: 1, creationDate: createdAt(0) }]);
     const reusedTree = [
       { pid: 901, parentPid: 1, creationDate: createdAt(10) },
       { pid: 903, parentPid: 901, creationDate: createdAt(11) },
     ];
-    const captured = captureExitedWindowsProcessTree(
-      launchSnapshot,
-      reusedTree,
-      Date.parse(createdAt(20)),
-    );
+    const captured = captureExitedWindowsProcessTree(launchSnapshot, reusedTree, Date.parse(createdAt(20)));
     expect(captured.descendants).toEqual([]);
 
     const child = fakeChild(901);
@@ -248,19 +285,11 @@ describe('runtime resource cleanup', () => {
   });
 
   it('never captures or taskkills an orphan child after a reused Windows root exits', async () => {
-    const launchSnapshot = captureWindowsProcessTree(901, [
-      { pid: 901, parentPid: 1, creationDate: createdAt(0) },
-    ]);
+    const launchSnapshot = captureWindowsProcessTree(901, [{ pid: 901, parentPid: 1, creationDate: createdAt(0) }]);
     // PID 901 was reused at t6, spawned 903 at t7, then exited at t8. The
     // orphan retains numeric PPID 901 even though neither root identity exists.
-    const orphanedReusedTree = [
-      { pid: 903, parentPid: 901, creationDate: createdAt(7) },
-    ];
-    const captured = captureExitedWindowsProcessTree(
-      launchSnapshot,
-      orphanedReusedTree,
-      Date.parse(createdAt(9)),
-    );
+    const orphanedReusedTree = [{ pid: 903, parentPid: 901, creationDate: createdAt(7) }];
+    const captured = captureExitedWindowsProcessTree(launchSnapshot, orphanedReusedTree, Date.parse(createdAt(9)));
     expect(captured.descendants).toEqual([]);
 
     const child = fakeChild(901);
@@ -308,8 +337,11 @@ describe('runtime resource cleanup', () => {
       child.emit('exit', null, 'SIGKILL');
     });
     await closeChromiumResources({ close: () => new Promise(() => {}) }, child, {
-      platform: 'win32', taskkill, windowsProcessList: async () => processes,
-      browserCloseTimeoutMs: 10, forceTimeoutMs: 100,
+      platform: 'win32',
+      taskkill,
+      windowsProcessList: async () => processes,
+      browserCloseTimeoutMs: 10,
+      forceTimeoutMs: 100,
       windowsRootIdentity: { pid: 401, parentPid: 1, creationDate: createdAt(0) },
     });
     expect(taskkill).toHaveBeenCalledOnce();
@@ -329,16 +361,26 @@ describe('runtime resource cleanup', () => {
     const windowsProcessList = vi.fn(async () => {
       calls += 1;
       if (calls === 1) return original;
-      return original.map((record) => record.pid === 451 ? record : { ...record, parentPid: 1 });
+      return original.map((record) => (record.pid === 451 ? record : { ...record, parentPid: 1 }));
     });
     const started = Date.now();
-    await expect(closeChromiumResources({ close: vi.fn(async () => { throw new Error('close failed'); }) }, child, {
-      platform: 'win32',
-      taskkill: () => new Promise(() => {}),
-      windowsProcessList,
-      forceTimeoutMs: 80,
-      windowsRootIdentity: original[0],
-    })).rejects.toThrow(/deadline|terminate/);
+    await expect(
+      closeChromiumResources(
+        {
+          close: vi.fn(async () => {
+            throw new Error('close failed');
+          }),
+        },
+        child,
+        {
+          platform: 'win32',
+          taskkill: () => new Promise(() => {}),
+          windowsProcessList,
+          forceTimeoutMs: 80,
+          windowsRootIdentity: original[0],
+        },
+      ),
+    ).rejects.toThrow(/deadline|terminate/);
     expect(Date.now() - started).toBeLessThan(500);
   });
 
@@ -352,17 +394,26 @@ describe('runtime resource cleanup', () => {
       expect(pid).toBe(502);
       processes = [{ pid: 501, parentPid: 1, creationDate: createdAt(10) }];
     });
-    await closeChromiumResources({ close: vi.fn(async () => {
-      Object.assign(child, { exitCode: 0 });
-      child.emit('exit', 0, null);
-      processes = [
-        { pid: 501, parentPid: 1, creationDate: createdAt(10) },
-        { pid: 502, parentPid: 1, creationDate: createdAt(1) },
-      ];
-    }) }, child, {
-      platform: 'win32', taskkill, windowsProcessList: async () => processes, forceTimeoutMs: 100,
-      windowsRootIdentity: { pid: 501, parentPid: 1, creationDate: createdAt(0) },
-    });
+    await closeChromiumResources(
+      {
+        close: vi.fn(async () => {
+          Object.assign(child, { exitCode: 0 });
+          child.emit('exit', 0, null);
+          processes = [
+            { pid: 501, parentPid: 1, creationDate: createdAt(10) },
+            { pid: 502, parentPid: 1, creationDate: createdAt(1) },
+          ];
+        }),
+      },
+      child,
+      {
+        platform: 'win32',
+        taskkill,
+        windowsProcessList: async () => processes,
+        forceTimeoutMs: 100,
+        windowsRootIdentity: { pid: 501, parentPid: 1, creationDate: createdAt(0) },
+      },
+    );
     expect(taskkill).toHaveBeenCalledOnce();
     expect(taskkill).toHaveBeenCalledWith(502);
   });
@@ -372,13 +423,15 @@ describe('runtime resource cleanup', () => {
     Object.assign(child, { exitCode: 0 });
     const taskkill = vi.fn(async () => undefined);
     const browserClose = vi.fn(async () => undefined);
-    await expect(closeChromiumResources({ close: browserClose }, child, {
-      platform: 'win32',
-      taskkill,
-      windowsProcessList: async () => [{ pid: 601, parentPid: 1, creationDate: createdAt(10) }],
-      windowsRootIdentity: { pid: 601, parentPid: 1, creationDate: createdAt(0) },
-      forceTimeoutMs: 100,
-    })).rejects.toThrow('no longer has its launch-time process identity');
+    await expect(
+      closeChromiumResources({ close: browserClose }, child, {
+        platform: 'win32',
+        taskkill,
+        windowsProcessList: async () => [{ pid: 601, parentPid: 1, creationDate: createdAt(10) }],
+        windowsRootIdentity: { pid: 601, parentPid: 1, creationDate: createdAt(0) },
+        forceTimeoutMs: 100,
+      }),
+    ).rejects.toThrow('no longer has its launch-time process identity');
     expect(browserClose).toHaveBeenCalledOnce();
     expect(taskkill).not.toHaveBeenCalled();
   });
@@ -389,9 +442,13 @@ describe('runtime resource cleanup', () => {
       Object.assign(child, { signalCode: 'SIGKILL' });
       child.emit('exit', null, 'SIGKILL');
     });
-    await expect(terminateProcessTree(child, {
-      platform: 'win32', taskkill, forceTimeoutMs: 100,
-    })).rejects.toThrow('could not be identity-verified');
+    await expect(
+      terminateProcessTree(child, {
+        platform: 'win32',
+        taskkill,
+        forceTimeoutMs: 100,
+      }),
+    ).rejects.toThrow('could not be identity-verified');
     expect(taskkill).toHaveBeenCalledWith(701);
     expect(child.signalCode).toBe('SIGKILL');
   });
@@ -402,11 +459,9 @@ describe('runtime resource cleanup', () => {
       Object.assign(child, { signalCode: 'SIGKILL' });
       child.emit('exit', null, 'SIGKILL');
     });
-    await expect(terminateFailedChromiumLaunch(
-      child,
-      { platform: 'win32', taskkill, forceTimeoutMs: 100 },
-      Promise.reject(new Error('injected CIM identity failure')),
-    )).rejects.toThrow('identity capture and process termination failed');
+    await expect(
+      terminateFailedChromiumLaunch(child, { platform: 'win32', taskkill, forceTimeoutMs: 100 }, Promise.reject(new Error('injected CIM identity failure'))),
+    ).rejects.toThrow('identity capture and process termination failed');
     expect(taskkill).toHaveBeenCalledWith(711);
     expect(child.signalCode).toBe('SIGKILL');
   });
@@ -416,11 +471,11 @@ describe('runtime resource cleanup', () => {
     try {
       const child = fakeChild();
       Object.assign(child, { exitCode: 0 });
-      await closeChromiumResources(
-        { close: vi.fn(async () => undefined) },
-        child,
-        { platform: 'linux', posixGroupAlive: () => false, posixExitCleanup: async () => undefined },
-      );
+      await closeChromiumResources({ close: vi.fn(async () => undefined) }, child, {
+        platform: 'linux',
+        posixGroupAlive: () => false,
+        posixExitCleanup: async () => undefined,
+      });
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -465,11 +520,7 @@ describe('runtime resource cleanup', () => {
 
   it('kills and joins a hung Windows helper subprocess at its internal deadline', async () => {
     const started = Date.now();
-    await expect(runBoundedHelper(
-      process.execPath,
-      ['--eval', 'setInterval(() => {}, 10_000)'],
-      { timeoutMs: 75 },
-    )).rejects.toThrow('timed out');
+    await expect(runBoundedHelper(process.execPath, ['--eval', 'setInterval(() => {}, 10_000)'], { timeoutMs: 75 })).rejects.toThrow('timed out');
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
@@ -537,24 +588,36 @@ describe('runtime resource cleanup', () => {
       dataDir: path.join(root, 'data'),
       runtimeDir: path.join(root, 'run'),
     } as never;
-    const chromiumClose = vi.fn(async () => { throw new Error('injected termination failure'); });
-    const launch = vi.fn(async () => ({
-      context: {
-        setDefaultTimeout: vi.fn(() => { throw new Error('injected post-launch setup failure'); }),
-        setDefaultNavigationTimeout: vi.fn(),
-        pages: vi.fn(() => []),
-        on: vi.fn(),
-      },
-      close: chromiumClose,
-    }) as never);
+    const chromiumClose = vi.fn(async () => {
+      throw new Error('injected termination failure');
+    });
+    const launch = vi.fn(
+      async () =>
+        ({
+          context: {
+            setDefaultTimeout: vi.fn(() => {
+              throw new Error('injected post-launch setup failure');
+            }),
+            setDefaultNavigationTimeout: vi.fn(),
+            pages: vi.fn(() => []),
+            on: vi.fn(),
+          },
+          close: chromiumClose,
+        }) as never,
+    );
 
-    await expect(TendrilSession.create({
-      id: 'ses_post_launch_failure',
-      userDataDir: path.join(root, 'run', 'sessions', 'ses_post_launch_failure'),
-      createOptions: {},
-      config,
-      logger: new Logger('error'),
-    }, { launch })).rejects.toMatchObject({
+    await expect(
+      TendrilSession.create(
+        {
+          id: 'ses_post_launch_failure',
+          userDataDir: path.join(root, 'run', 'sessions', 'ses_post_launch_failure'),
+          createOptions: {},
+          config,
+          logger: new Logger('error'),
+        },
+        { launch },
+      ),
+    ).rejects.toMatchObject({
       code: 'BROWSER_LAUNCH_FAILED',
       details: { browserTerminationVerified: false },
     });
@@ -574,29 +637,41 @@ describe('runtime resource cleanup', () => {
       runtimeDir: path.join(root, 'run'),
     } as never;
     const chromiumClose = vi.fn(async () => undefined);
-    const proxyStop = vi.fn(async () => { throw new Error('injected proxy stop failure'); });
+    const proxyStop = vi.fn(async () => {
+      throw new Error('injected proxy stop failure');
+    });
     const proxy = {
       start: vi.fn(async () => undefined),
       stop: proxyStop,
       url: () => 'http://127.0.0.1:9',
     } as never;
-    const launch = vi.fn(async () => ({
-      context: {
-        setDefaultTimeout: vi.fn(() => { throw new Error('injected setup failure'); }),
-        setDefaultNavigationTimeout: vi.fn(),
-        pages: vi.fn(() => []),
-        on: vi.fn(),
-      },
-      close: chromiumClose,
-    }) as never);
+    const launch = vi.fn(
+      async () =>
+        ({
+          context: {
+            setDefaultTimeout: vi.fn(() => {
+              throw new Error('injected setup failure');
+            }),
+            setDefaultNavigationTimeout: vi.fn(),
+            pages: vi.fn(() => []),
+            on: vi.fn(),
+          },
+          close: chromiumClose,
+        }) as never,
+    );
 
-    await expect(TendrilSession.create({
-      id: 'ses_proxy_cleanup_failure',
-      userDataDir: path.join(root, 'run', 'sessions', 'ses_proxy_cleanup_failure'),
-      createOptions: {},
-      config,
-      logger: new Logger('error'),
-    }, { launch, proxy })).rejects.toMatchObject({
+    await expect(
+      TendrilSession.create(
+        {
+          id: 'ses_proxy_cleanup_failure',
+          userDataDir: path.join(root, 'run', 'sessions', 'ses_proxy_cleanup_failure'),
+          createOptions: {},
+          config,
+          logger: new Logger('error'),
+        },
+        { launch, proxy },
+      ),
+    ).rejects.toMatchObject({
       code: 'BROWSER_LAUNCH_FAILED',
       details: { browserTerminationVerified: true, resourceCleanupVerified: false },
     });
@@ -611,13 +686,15 @@ describe('runtime resource cleanup', () => {
     const previous = process.env.TENDRIL_ALLOW_NO_SANDBOX;
     process.env.TENDRIL_ALLOW_NO_SANDBOX = 'true';
     try {
-      await expect(launchChromium({
-        executablePath: process.execPath,
-        userDataDir,
-        proxyUrl: 'http://127.0.0.1:9',
-        headless: true,
-        logger: new Logger('error'),
-      })).rejects.toMatchObject({ code: 'BROWSER_LAUNCH_FAILED' });
+      await expect(
+        launchChromium({
+          executablePath: process.execPath,
+          userDataDir,
+          proxyUrl: 'http://127.0.0.1:9',
+          headless: true,
+          logger: new Logger('error'),
+        }),
+      ).rejects.toMatchObject({ code: 'BROWSER_LAUNCH_FAILED' });
     } finally {
       if (previous === undefined) delete process.env.TENDRIL_ALLOW_NO_SANDBOX;
       else process.env.TENDRIL_ALLOW_NO_SANDBOX = previous;
@@ -629,7 +706,9 @@ describe('runtime resource cleanup', () => {
   it('attempts proxy and directory cleanup even when Chromium close fails', async () => {
     const userDataDir = await mkdtemp(path.join(os.tmpdir(), 'tendril-session-cleanup-'));
     await writeFile(path.join(userDataDir, 'sentinel'), 'temporary state');
-    const chromiumClose = vi.fn(async () => { throw new Error('injected Chromium close failure'); });
+    const chromiumClose = vi.fn(async () => {
+      throw new Error('injected Chromium close failure');
+    });
     const proxyStop = vi.fn(async () => undefined);
     const session = Object.create(TendrilSession.prototype) as TendrilSession;
     Object.assign(session as unknown as Record<string, unknown>, {

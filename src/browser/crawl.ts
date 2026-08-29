@@ -1,8 +1,8 @@
-import robotsParser from 'robots-parser';
 import { StringDecoder } from 'node:string_decoder';
+import robotsParser from 'robots-parser';
 import { TendrilError } from '../errors.js';
 import type { CrawlJob, CrawlResult, CrawlResultPage } from '../types.js';
-import { newId, withTimeout, type Logger } from '../util.js';
+import { type Logger, newId, withTimeout } from '../util.js';
 import type { BrowserManager } from './manager.js';
 import type { TendrilSession } from './session.js';
 
@@ -21,8 +21,16 @@ interface InternalJob extends Omit<CrawlJob, 'resultCount'> {
   creationCleanup?: Promise<void>;
   creationCleanupFailure?: unknown;
 }
-interface RobotsPolicy { isAllowed(url: string, userAgent?: string): boolean | undefined }
-interface CrawlOptions { url: string; maxPages?: number; maxDepth?: number; sameOrigin?: boolean; respectRobots?: boolean }
+interface RobotsPolicy {
+  isAllowed(url: string, userAgent?: string): boolean | undefined;
+}
+interface CrawlOptions {
+  url: string;
+  maxPages?: number;
+  maxDepth?: number;
+  sameOrigin?: boolean;
+  respectRobots?: boolean;
+}
 interface CrawlServiceOptions {
   maxJobs?: number;
   retentionMs?: number;
@@ -48,7 +56,9 @@ function canonical(raw: string): string | undefined {
     url.hash = '';
     for (const key of [...url.searchParams.keys()]) if (/^utm_/i.test(key)) url.searchParams.delete(key);
     return url.toString();
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 function redactErrorMessage(error: unknown): string {
@@ -103,7 +113,11 @@ export class CrawlService {
   private closing = false;
   private closePromise?: Promise<void>;
 
-  constructor(private readonly manager: BrowserManager, private readonly logger: Logger, options: CrawlServiceOptions = {}) {
+  constructor(
+    private readonly manager: BrowserManager,
+    private readonly logger: Logger,
+    options: CrawlServiceOptions = {},
+  ) {
     this.maxJobs = Math.max(1, options.maxJobs ?? 100);
     this.retentionMs = Math.max(1_000, options.retentionMs ?? 30 * 60_000);
     this.maxResultMarkdownBytes = Math.max(1, options.maxResultMarkdownBytes ?? 100_000);
@@ -145,12 +159,22 @@ export class CrawlService {
       throw new TendrilError('CRAWL_FAILED', 'maxDepth must be a finite integer from 0 to 5');
     }
     if (options.sameOrigin !== undefined && typeof options.sameOrigin !== 'boolean') throw new TendrilError('CRAWL_FAILED', 'sameOrigin must be a boolean');
-    if (options.respectRobots !== undefined && typeof options.respectRobots !== 'boolean') throw new TendrilError('CRAWL_FAILED', 'respectRobots must be a boolean');
+    if (options.respectRobots !== undefined && typeof options.respectRobots !== 'boolean')
+      throw new TendrilError('CRAWL_FAILED', 'respectRobots must be a boolean');
     const controller = new AbortController();
     const job: InternalJob = {
-      id: newId('crawl'), status: 'running', startedAt: new Date(this.now()).toISOString(), queued: 1,
-      visited: 0, results: [], cancelled: false, storedMarkdownBytes: 0,
-      storedLinkBytes: 0, storedLinkCount: 0, storedTitleBytes: 0, controller,
+      id: newId('crawl'),
+      status: 'running',
+      startedAt: new Date(this.now()).toISOString(),
+      queued: 1,
+      visited: 0,
+      results: [],
+      cancelled: false,
+      storedMarkdownBytes: 0,
+      storedLinkBytes: 0,
+      storedLinkCount: 0,
+      storedTitleBytes: 0,
+      controller,
       deadlineTimer: setTimeout(() => {
         job.abortReason = new TendrilError('TIMEOUT', `Crawl exceeded its ${this.jobTimeoutMs}ms execution deadline`, { retryable: true });
         controller.abort(job.abortReason);
@@ -274,11 +298,14 @@ export class CrawlService {
     const existing = this.expiryTimers.get(job.id);
     if (existing) clearTimeout(existing);
     const expiresAt = new Date(job.completedAt).getTime() + this.retentionMs;
-    const timer = setTimeout(() => {
-      this.expiryTimers.delete(job.id);
-      const current = this.jobs.get(job.id);
-      if (current && current.status !== 'running') this.deleteJob(job.id);
-    }, Math.max(1, expiresAt - this.now()));
+    const timer = setTimeout(
+      () => {
+        this.expiryTimers.delete(job.id);
+        const current = this.jobs.get(job.id);
+        if (current && current.status !== 'running') this.deleteJob(job.id);
+      },
+      Math.max(1, expiresAt - this.now()),
+    );
     timer.unref();
     this.expiryTimers.set(job.id, timer);
   }
@@ -329,7 +356,9 @@ export class CrawlService {
   private async awaitJob<T>(job: InternalJob, operation: Promise<T>): Promise<T> {
     if (job.controller.signal.aborted) throw job.abortReason ?? job.controller.signal.reason ?? this.abortError();
     let rejectAbort!: (reason: unknown) => void;
-    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
     const onAbort = (): void => rejectAbort(job.abortReason ?? job.controller.signal.reason ?? this.abortError());
     job.controller.signal.addEventListener('abort', onAbort, { once: true });
     void operation.catch(() => undefined);
@@ -362,7 +391,10 @@ export class CrawlService {
     await withTimeout(this.manager.close(lateSession.id), remaining(), 'Late crawl session cleanup');
   }
 
-  private async run(job: InternalJob, options: { url: string; maxPages: number; maxDepth: number; sameOrigin: boolean; respectRobots: boolean }): Promise<void> {
+  private async run(
+    job: InternalJob,
+    options: { url: string; maxPages: number; maxDepth: number; sameOrigin: boolean; respectRobots: boolean },
+  ): Promise<void> {
     let session: TendrilSession | undefined;
     let terminalStatus: CrawlJob['status'] = 'completed';
     let terminalError: string | undefined;
@@ -407,9 +439,14 @@ export class CrawlService {
         const requestedUrl = publicCrawlUrl(next.url);
         const result: CrawlResult = { requestedUrl, finalUrl: requestedUrl, url: requestedUrl, status: null, links: [] };
         try {
-          const navigation = await this.awaitJob(job, session.navigate({
-            url: next.url, waitUntil: 'domcontentloaded', signal: job.controller.signal,
-          }));
+          const navigation = await this.awaitJob(
+            job,
+            session.navigate({
+              url: next.url,
+              waitUntil: 'domcontentloaded',
+              signal: job.controller.signal,
+            }),
+          );
           result.status = navigation.status;
           const finalUrl = canonical(navigation.url ?? next.url);
           if (!finalUrl) throw new TendrilError('NETWORK_BLOCKED', 'Navigation redirected to a non-HTTP(S), credentialed, or overlong URL');
@@ -431,7 +468,11 @@ export class CrawlService {
             job.queued = queue.length;
             continue;
           }
-          const extracted = await this.awaitJob(job, session.extract({ format: 'all' })) as { title: string; markdown: string; links: Array<{ url: string }> };
+          const extracted = (await this.awaitJob(job, session.extract({ format: 'all' }))) as {
+            title: string;
+            markdown: string;
+            links: Array<{ url: string }>;
+          };
           const remainingTitleBytes = Math.max(0, this.maxJobTitleBytes - job.storedTitleBytes);
           const titleLimit = Math.min(this.maxResultTitleBytes, remainingTitleBytes);
           result.title = truncateUtf8(extracted.title, titleLimit);
@@ -467,10 +508,7 @@ export class CrawlService {
             uniqueLinks.add(rawLink);
             const publicLink = publicCrawlUrl(rawLink);
             const linkBytes = Buffer.byteLength(publicLink);
-            if (
-              resultLinkBytes + linkBytes > this.maxResultLinkBytes
-              || job.storedLinkBytes + linkBytes > this.maxJobLinkBytes
-            ) {
+            if (resultLinkBytes + linkBytes > this.maxResultLinkBytes || job.storedLinkBytes + linkBytes > this.maxJobLinkBytes) {
               linksTruncated = true;
               continue;
             }
@@ -513,8 +551,9 @@ export class CrawlService {
       }
     } finally {
       if (session) {
-        try { await this.closeActiveSession(job); }
-        catch (error) {
+        try {
+          await this.closeActiveSession(job);
+        } catch (error) {
           terminalStatus = 'failed';
           terminalError = redactErrorMessage(new Error(`Crawl cleanup failed: ${redactErrorMessage(error)}`));
         }
