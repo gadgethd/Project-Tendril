@@ -121,17 +121,11 @@ describe('HTTP authentication primitives', () => {
     const handle = await open(tokenPath, 'r');
     try {
       const opened = await handle.stat({ bigint: true });
-      // codeql[js/file-system-race] Deliberate adversarial test: the file is
-      // intentionally swapped between reads so the assertions exercise
-      // assertStableTokenFileIdentity, the race defense under test.
       const unchanged = await lstat(tokenPath, { bigint: true });
       expect(() => assertStableTokenFileIdentity(before, opened, unchanged, tokenPath)).not.toThrow();
 
       await rename(tokenPath, originalPath);
       await writeFile(tokenPath, `${'x'.repeat(32)}\n`, { mode: 0o600 });
-      // codeql[js/file-system-race] Same deliberate swap as above: replacement
-      // is the post-swap identity that must be rejected by the stable-identity
-      // assertions.
       const replacement = await lstat(tokenPath, { bigint: true });
       expect(() => assertStableTokenFileIdentity(before, opened, replacement, tokenPath)).toThrow('changed while it was being opened');
     } finally {
