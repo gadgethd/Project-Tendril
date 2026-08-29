@@ -1,12 +1,12 @@
 import { copyFile, lstat, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import type { BrowserContext, Dialog, Download, Frame, Page, Request, Response } from 'playwright';
+import type { BrowserContext, Dialog, Download, Frame, JSHandle, Page, Request, Response } from 'playwright';
 import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
 import type {
-  ActivityEntry, BrowserCaptureOptions, BrowserCaptureResult, ChallengeInfo, ConsoleEntry, ElementRef,
+  ActivityEntry, BrowserCaptureOptions, BrowserCaptureResult, ChallengeInfo, ConsoleEntry, ContentSafetyEnvelope, ElementRef,
   NetworkEntry, PageId, PageSummary, SessionCreateOptions, SessionExport, SessionHealth, SessionId,
   SessionInfo, SnapshotResult, TendrilConfig,
 } from '../types.js';
@@ -14,8 +14,13 @@ import {
   assertPathWithinOwnedRoot, assertPathWithinRoots, newId, pathWithinOwnedRoot, withTimeout, type Logger,
 } from '../util.js';
 import { launchChromium, type ChromiumProcess } from './chromium.js';
+import { mergeInjectionWarnings, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
 import { extractForms, extractPage, extractTables } from './extract.js';
-import { createSnapshot, type ElementTarget } from './snapshot.js';
+import {
+  boundedSnapshotFrameUrls, boundedSnapshotTitle, boundedSnapshotUrl, boundedSnapshotWarnings,
+  createSnapshot, ELEMENT_FINGERPRINT_OPTIONS, SNAPSHOT_BOUNDS,
+  type ElementTarget,
+} from './snapshot.js';
 
 interface SessionCreateDependencies {
   launch?: typeof launchChromium;
@@ -37,6 +42,39 @@ interface DialogEntry {
   dialog: Dialog;
 }
 
+interface StoredSnapshotMetadata {
+  readonly snapshotId: string;
+  readonly pageId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly frameUrls: readonly string[];
+  readonly mode: SnapshotResult['mode'];
+  readonly warnings: readonly string[];
+  readonly baselineSnapshotId?: string;
+  readonly diffSummary?: SnapshotResult['diffSummary'];
+}
+
+interface StoredSnapshot {
+  readonly metadata: StoredSnapshotMetadata;
+  readonly fullContent: string;
+  readonly canonicalContent?: string;
+  readonly refIds: Set<ElementRef>;
+  readonly cursorIds: Set<string>;
+  readonly cursorByPosition: Map<string, string>;
+  readonly documents: Set<JSHandle<Document>>;
+}
+
+interface CanonicalSnapshotBaseline {
+  readonly snapshotId: string;
+  readonly content: string;
+}
+
+interface SnapshotCursorEntry {
+  readonly snapshotId: string;
+  readonly offset: number;
+  readonly maxChars: number;
+}
+
 type AddCookie = Parameters<BrowserContext['addCookies']>[0][number];
 
 function abortError(signal: AbortSignal): Error {
@@ -53,6 +91,28 @@ function boundedTimeout(configuredMs: number, deadlineMs?: number): number {
   const remaining = deadlineMs - Date.now();
   if (remaining <= 0) throw new TendrilError('TIMEOUT', 'Operation deadline exceeded', { retryable: true });
   return Math.max(1, Math.min(configuredMs, remaining));
+const MAX_STORED_SNAPSHOTS = 20;
+const MAX_STORED_SNAPSHOT_CHARS = 1_000_000;
+const MAX_TOTAL_STORED_SNAPSHOT_CHARS = 5_000_000;
+const MIN_SNAPSHOT_CHUNK_CHARS = 1_000;
+const PAGE_SNAPSHOT_PREVIEW_CHARS = 500;
+const MAX_STORED_SNAPSHOT_LINE_CHARS = 900;
+const SNAPSHOT_CURSOR_PATTERN = /^cur_[a-f0-9]{20}$/;
+const ELEMENT_REF_PATTERN = /^snap_[a-f0-9]{20}:e[1-9]\d{0,4}$/;
+function normalizeStoredSnapshotLines(content: string): { content: string; truncated: boolean } {
+  let truncated = false;
+  const suffix = ' …[line truncated]';
+  const lines = content.split('\n').map((line) => {
+    if (line.length <= MAX_STORED_SNAPSHOT_LINE_CHARS) return line;
+    truncated = true;
+    let end = MAX_STORED_SNAPSHOT_LINE_CHARS - suffix.length;
+    if (end > 0 && /[\uD800-\uDBFF]/.test(line[end - 1]!)) end -= 1;
+    let prefix = line.slice(0, Math.max(0, end));
+    const partialRef = prefix.lastIndexOf('[ref=');
+    if (partialRef >= 0 && prefix.indexOf(']', partialRef) < 0) prefix = prefix.slice(0, partialRef).trimEnd();
+    return `${prefix}${suffix}`.slice(0, MAX_STORED_SNAPSHOT_LINE_CHARS);
+  });
+  return { content: lines.join('\n'), truncated };
 }
 
 export type BrowserAction =
@@ -81,7 +141,9 @@ export class TendrilSession {
   private readonly requestIds = new WeakMap<Request, string>();
   private readonly responses = new Map<string, Response>();
   private readonly refs = new Map<ElementRef, ElementTarget>();
-  private readonly snapshotContents = new Map<string, string>();
+  private readonly snapshots = new Map<string, StoredSnapshot>();
+  private readonly snapshotCursors = new Map<string, SnapshotCursorEntry>();
+  private readonly canonicalSnapshotByPage = new Map<PageId, CanonicalSnapshotBaseline>();
   private selectedPageId?: PageId;
   private activeDialog?: DialogEntry;
   private closePromise?: Promise<void>;
@@ -195,6 +257,8 @@ export class TendrilSession {
       this.pages.delete(page);
       this.pagesById.delete(pageId);
       this.lastSnapshotByPage.delete(pageId);
+      this.canonicalSnapshotByPage.delete(pageId);
+      void this.invalidatePageRefs(pageId);
       if (this.selectedPageId === pageId) this.selectedPageId = this.pagesById.keys().next().value as string | undefined;
     });
     page.on('console', (message) => {
@@ -281,6 +345,184 @@ export class TendrilSession {
     return id;
   }
 
+  private snapshotChunkSize(requested?: number): number {
+    const value = requested ?? this.config.maxSnapshotChars;
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+      throw new TendrilError('CONFIGURATION_ERROR', 'Snapshot maxChars must be a positive integer');
+    }
+    if (value < MIN_SNAPSHOT_CHUNK_CHARS) {
+      throw new TendrilError('CONFIGURATION_ERROR', `Snapshot maxChars must be at least ${MIN_SNAPSHOT_CHUNK_CHARS}`);
+    }
+    return Math.min(value, 100_000);
+  }
+
+  private async invalidatePageRefs(pageId: PageId): Promise<void> {
+    const targets: ElementTarget[] = [];
+    const affectedSnapshots = new Set<StoredSnapshot>();
+    for (const [ref, target] of this.refs) {
+      if (target.pageId !== pageId) continue;
+      this.refs.delete(ref);
+      const snapshot = this.snapshots.get(target.snapshotId);
+      snapshot?.refIds.delete(ref);
+      if (snapshot) affectedSnapshots.add(snapshot);
+      targets.push(target);
+    }
+    await Promise.all(targets.map((target) => target.element.dispose().catch(() => undefined)));
+    await Promise.all([...affectedSnapshots].flatMap((snapshot) => {
+      if (snapshot.refIds.size > 0) return [];
+      const documents = [...snapshot.documents];
+      snapshot.documents.clear();
+      return documents.map((document) => document.dispose().catch(() => undefined));
+    }));
+  }
+
+  private async evictSnapshot(snapshotId: string): Promise<void> {
+    const snapshot = this.snapshots.get(snapshotId);
+    if (!snapshot) return;
+    this.snapshots.delete(snapshotId);
+    const baseline = this.canonicalSnapshotByPage.get(snapshot.metadata.pageId);
+    if (baseline?.snapshotId === snapshotId) this.canonicalSnapshotByPage.delete(snapshot.metadata.pageId);
+    for (const cursor of snapshot.cursorIds) this.snapshotCursors.delete(cursor);
+    snapshot.cursorByPosition.clear();
+    const targets: ElementTarget[] = [];
+    for (const ref of snapshot.refIds) {
+      const target = this.refs.get(ref);
+      if (!target || target.snapshotId !== snapshotId) continue;
+      this.refs.delete(ref);
+      targets.push(target);
+    }
+    await Promise.all(targets.map((target) => target.element.dispose().catch(() => undefined)));
+    await Promise.all([...snapshot.documents].map((document) => document.dispose().catch(() => undefined)));
+    snapshot.documents.clear();
+  }
+
+  private async storeSnapshot(options: {
+    result: SnapshotResult;
+    fullContent: string;
+    canonicalContent?: string;
+    refs?: Map<ElementRef, ElementTarget>;
+    documents?: JSHandle<Document>[];
+  }): Promise<StoredSnapshot> {
+    const normalizedFull = normalizeStoredSnapshotLines(options.fullContent);
+    const normalizedCanonical = options.canonicalContent === undefined
+      ? undefined
+      : normalizeStoredSnapshotLines(options.canonicalContent);
+    const cappedContent = normalizedFull.content.slice(0, MAX_STORED_SNAPSHOT_CHARS);
+    const boundary = normalizedFull.content.length > MAX_STORED_SNAPSHOT_CHARS ? cappedContent.lastIndexOf('\n') : -1;
+    const fullContent = boundary > 0 ? cappedContent.slice(0, boundary) : cappedContent;
+    const cappedCanonical = normalizedCanonical?.content.slice(0, MAX_STORED_SNAPSHOT_CHARS);
+    const canonicalBoundary = (normalizedCanonical?.content.length ?? 0) > MAX_STORED_SNAPSHOT_CHARS
+      ? cappedCanonical?.lastIndexOf('\n') ?? -1
+      : -1;
+    const canonicalContent = canonicalBoundary > 0 ? cappedCanonical!.slice(0, canonicalBoundary) : cappedCanonical;
+    const warnings = [...options.result.warnings];
+    if (normalizedFull.truncated || normalizedCanonical?.truncated) {
+      warnings.push(`Snapshot lines exceeded ${MAX_STORED_SNAPSHOT_LINE_CHARS} characters and were safely truncated.`);
+    }
+    if (normalizedFull.content.length > MAX_STORED_SNAPSHOT_CHARS || (normalizedCanonical?.content.length ?? 0) > MAX_STORED_SNAPSHOT_CHARS) {
+      warnings.push(`Snapshot content exceeded ${MAX_STORED_SNAPSHOT_CHARS} characters and was capped.`);
+    }
+    const boundedWarnings = boundedSnapshotWarnings(warnings);
+    const metadata: StoredSnapshotMetadata = Object.freeze({
+      snapshotId: options.result.snapshotId,
+      pageId: options.result.pageId,
+      url: options.result.url,
+      title: options.result.title,
+      frameUrls: Object.freeze([...options.result.frameUrls]),
+      mode: options.result.mode,
+      warnings: Object.freeze(boundedWarnings),
+      ...(options.result.baselineSnapshotId ? { baselineSnapshotId: options.result.baselineSnapshotId } : {}),
+      ...(options.result.diffSummary ? { diffSummary: Object.freeze({ ...options.result.diffSummary }) } : {}),
+    });
+    const record: StoredSnapshot = {
+      metadata,
+      fullContent,
+      ...(canonicalContent === undefined ? {} : { canonicalContent }),
+      refIds: new Set(),
+      cursorIds: new Set(),
+      cursorByPosition: new Map(),
+      documents: new Set(),
+    };
+    this.snapshots.set(metadata.snapshotId, record);
+    const retainedRefs = new Set([...fullContent.matchAll(/\[ref=([^\]]+)\]/g)].map((match) => match[1]!));
+    for (const [ref, target] of options.refs ?? []) {
+      if (retainedRefs.has(ref)) {
+        record.refIds.add(ref);
+        this.refs.set(ref, target);
+      } else await target.element.dispose().catch(() => undefined);
+    }
+    for (const ref of record.refIds) {
+      const document = options.refs?.get(ref)?.ownerDocument;
+      if (document) record.documents.add(document);
+    }
+    await Promise.all((options.documents ?? []).filter((document) => !record.documents.has(document))
+      .map((document) => document.dispose().catch(() => undefined)));
+    const storedCharacters = (): number => [...this.snapshots.values()].reduce(
+      (total, snapshot) => total + snapshot.fullContent.length + (snapshot.canonicalContent?.length ?? 0), 0,
+    );
+    while (this.snapshots.size > MAX_STORED_SNAPSHOTS || storedCharacters() > MAX_TOTAL_STORED_SNAPSHOT_CHARS) {
+      const oldest = this.snapshots.keys().next().value as string | undefined;
+      if (!oldest) break;
+      await this.evictSnapshot(oldest);
+    }
+    return record;
+  }
+
+  private createSnapshotCursor(record: StoredSnapshot, offset: number, maxChars: number): string {
+    const position = `${offset}:${maxChars}`;
+    const existing = record.cursorByPosition.get(position);
+    if (existing) return existing;
+    const cursor = newId('cur');
+    this.snapshotCursors.set(cursor, { snapshotId: record.metadata.snapshotId, offset, maxChars });
+    record.cursorIds.add(cursor);
+    record.cursorByPosition.set(position, cursor);
+    return cursor;
+  }
+
+  private snapshotChunk(record: StoredSnapshot, offset: number, maxChars: number, nodes?: SnapshotResult['nodes']): SnapshotResult {
+    const maximumOffset = Math.min(record.fullContent.length, offset + maxChars);
+    let nextOffset = maximumOffset;
+    if (maximumOffset < record.fullContent.length) {
+      const boundary = record.fullContent.lastIndexOf('\n', maximumOffset - 1);
+      if (boundary >= offset) nextOffset = boundary + 1;
+      else if (nextOffset > offset && /[\uD800-\uDBFF]/.test(record.fullContent[nextOffset - 1]!)) nextOffset -= 1;
+    }
+    const truncated = nextOffset < record.fullContent.length;
+    const metadata = record.metadata;
+    const result: SnapshotResult = {
+      snapshotId: metadata.snapshotId,
+      pageId: metadata.pageId,
+      url: metadata.url,
+      title: metadata.title,
+      frameUrls: [...metadata.frameUrls],
+      mode: metadata.mode,
+      content: record.fullContent.slice(offset, nextOffset),
+      truncated,
+      untrustedContent: true,
+      warnings: [...metadata.warnings],
+    };
+    if (metadata.baselineSnapshotId) result.baselineSnapshotId = metadata.baselineSnapshotId;
+    if (metadata.diffSummary) result.diffSummary = { ...metadata.diffSummary };
+    if (!truncated && offset === 0 && nodes
+      && record.fullContent.length + JSON.stringify(nodes).length <= maxChars) result.nodes = nodes;
+    if (truncated) result.cursor = this.createSnapshotCursor(record, nextOffset, maxChars);
+    return result;
+  }
+
+  private continueSnapshot(cursor: string, requestedMax?: number): SnapshotResult {
+    if (!SNAPSHOT_CURSOR_PATTERN.test(cursor)) throw new TendrilError('INVALID_CURSOR', 'Invalid snapshot cursor');
+    const entry = this.snapshotCursors.get(cursor);
+    if (!entry) throw new TendrilError('INVALID_CURSOR', 'Snapshot cursor is invalid or expired');
+    const snapshot = this.snapshots.get(entry.snapshotId);
+    if (!snapshot || entry.offset < 1 || entry.offset >= snapshot.fullContent.length) {
+      throw new TendrilError('INVALID_CURSOR', 'Snapshot cursor is invalid or expired');
+    }
+    if (requestedMax !== undefined && this.snapshotChunkSize(requestedMax) !== entry.maxChars) {
+      throw new TendrilError('INVALID_CURSOR', 'Snapshot cursor chunk size is immutable; retry with the original maxChars');
+    }
+    return this.snapshotChunk(snapshot, entry.offset, entry.maxChars);
+  }
+
   async info(cdpPublicUrl?: string): Promise<SessionInfo> {
     const info: SessionInfo = {
       id: this.id,
@@ -306,7 +548,7 @@ export class TendrilSession {
     const pages = await this.listPages();
     return pages.map((page) => {
       const lastSnapshot = this.lastSnapshotByPage.get(page.id);
-      return lastSnapshot === undefined ? page : { ...page, lastSnapshot: lastSnapshot.slice(0, 500) };
+      return lastSnapshot === undefined ? page : { ...page, lastSnapshot };
     });
   }
 
@@ -333,6 +575,7 @@ export class TendrilSession {
   async navigate(options: { pageId?: string; url?: string; action?: 'goto' | 'back' | 'forward' | 'reload'; waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'; signal?: AbortSignal; deadlineMs?: number }): Promise<{ url: string; title: string; status: number | null; mimeType?: string }> {
     if (options.signal?.aborted) throw Object.assign(new Error('Navigation was cancelled'), { name: 'AbortError' });
     const page = this.currentPage(options.pageId);
+    const pageId = this.pageId(page);
     const action = options.action ?? 'goto';
     let response: Response | null = null;
     const timeoutMs = boundedTimeout(this.config.navigationTimeoutMs, options.deadlineMs);
@@ -370,8 +613,8 @@ export class TendrilSession {
 
   async setContent(html: string, pageId?: string): Promise<{ url: string; title: string }> {
     const page = this.currentPage(pageId);
+    await this.invalidatePageRefs(this.pageId(page));
     await page.setContent(html, { waitUntil: 'domcontentloaded' });
-    this.refs.clear();
     return { url: page.url(), title: await page.title() };
   }
 
@@ -486,70 +729,209 @@ export class TendrilSession {
     const page = this.currentPage(options.pageId);
     const pageId = this.pageId(page);
     const mode = options.mode ?? 'interactive';
+    const maxChars = this.snapshotChunkSize(options.maxChars);
     if (mode === 'reader') {
-      const extracted = await extractPage(page);
+      await this.invalidatePageRefs(pageId);
+      const url = page.url();
+      const allFrames = page.frames();
+      const frames = allFrames.slice(0, SNAPSHOT_BOUNDS.maxFrames);
+      const rawFrameUrls = frames.map((frame) => frame.url());
+      const frameUrls = boundedSnapshotFrameUrls(rawFrameUrls);
+      const extracted = await extractPage(page, { maxChars: this.config.maxResponseBodyBytes });
       const full = `# ${extracted.title}\n\n${extracted.markdown}`;
-      const maxChars = Math.min(options.maxChars ?? this.config.maxSnapshotChars, 100_000);
       const snapshotId = newId('snap');
-      this.snapshotContents.set(snapshotId, full);
-      this.lastSnapshotByPage.set(pageId, full);
-      const result: SnapshotResult = {
-        snapshotId, pageId, url: page.url(), title: extracted.title, mode,
-        content: full.slice(0, maxChars), truncated: full.length > maxChars,
-        untrustedContent: true, warnings: [],
+      const currentFrames = page.frames();
+      if (page.url() !== url || currentFrames.length !== allFrames.length
+        || frames.some((frame, index) => currentFrames[index] !== frame || frame.url() !== rawFrameUrls[index])) {
+        throw new TendrilError('STALE_ELEMENT_REF', 'Page or frame changed while the reader snapshot was being captured; take a new snapshot');
+      }
+      const warnings = [...extracted.warnings];
+      if (allFrames.length > frames.length) warnings.push(`Snapshot omitted ${allFrames.length - frames.length} frames after the frame limit.`);
+      if (url !== boundedSnapshotUrl(url) || extracted.title !== boundedSnapshotTitle(extracted.title)
+        || rawFrameUrls.some((frameUrl, index) => frameUrl !== frameUrls[index])) {
+        warnings.push('Snapshot provenance was redacted or truncated to its output budget.');
+      }
+      const base: SnapshotResult = {
+        snapshotId, pageId, url: boundedSnapshotUrl(url), title: boundedSnapshotTitle(extracted.title),
+        frameUrls, mode,
+        content: '', truncated: false, untrustedContent: true, warnings,
       };
-      if (result.truncated) result.cursor = Buffer.from(JSON.stringify({ snapshotId, offset: maxChars })).toString('base64url');
+      const stored = await this.storeSnapshot({ result: base, fullContent: full });
+      this.lastSnapshotByPage.set(pageId, stored.fullContent.slice(0, PAGE_SNAPSHOT_PREVIEW_CHARS));
+      const result = this.snapshotChunk(stored, 0, maxChars);
       this.recordActivity('snapshot', `${mode} snapshot`, result.url);
       return result;
     }
-    const previousContent = options.previousSnapshotId
-      ? this.snapshotContents.get(options.previousSnapshotId)
-      : [...this.snapshotContents.values()].at(-1);
-    const maxChars = Math.min(options.maxChars ?? this.config.maxSnapshotChars, 100_000);
+
+    let baseline: CanonicalSnapshotBaseline | undefined;
+    if (mode === 'diff' && options.previousSnapshotId) {
+      const previous = this.snapshots.get(options.previousSnapshotId);
+      if (!previous?.canonicalContent) throw new TendrilError('STALE_ELEMENT_REF', 'Previous semantic snapshot is unavailable or expired');
+      if (previous.metadata.pageId !== pageId) throw new TendrilError('STALE_ELEMENT_REF', 'Diff baselines must belong to the same page');
+      baseline = { snapshotId: previous.metadata.snapshotId, content: previous.canonicalContent };
+    } else if (mode === 'diff') {
+      baseline = this.canonicalSnapshotByPage.get(pageId);
+    }
+
+    await this.invalidatePageRefs(pageId);
     const created = await createSnapshot({
-      page, pageId, mode, maxChars: 5_000_000, previousContent,
+      page, pageId, mode, maxChars: MAX_STORED_SNAPSHOT_CHARS,
+      previousContent: baseline?.content, baselineSnapshotId: baseline?.snapshotId,
       compact: options.compact, maxDepth: options.maxDepth,
     });
-    const full = created.result.content;
-    this.snapshotContents.set(created.result.snapshotId, full);
-    this.lastSnapshotByPage.set(pageId, full);
-    while (this.snapshotContents.size > 20) this.snapshotContents.delete(this.snapshotContents.keys().next().value as string);
-    this.refs.clear();
-    for (const [ref, target] of created.refs) this.refs.set(ref, target);
-    if (full.length > maxChars) {
-      created.result.content = full.slice(0, maxChars);
-      created.result.nodes = undefined;
-      created.result.truncated = true;
-      created.result.cursor = Buffer.from(JSON.stringify({ snapshotId: created.result.snapshotId, offset: maxChars })).toString('base64url');
-    }
-    this.recordActivity('snapshot', `${mode} snapshot`, created.result.url);
-    return created.result;
-  }
-
-  private continueSnapshot(cursor: string, requestedMax?: number): SnapshotResult {
-    let parsed: { snapshotId: string; offset: number };
-    try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as typeof parsed; }
-    catch { throw new TendrilError('INVALID_URL', 'Invalid snapshot cursor'); }
-    const content = this.snapshotContents.get(parsed.snapshotId);
-    if (content === undefined) throw new TendrilError('STALE_ELEMENT_REF', 'Snapshot cursor has expired; take a new snapshot');
-    const maxChars = Math.min(requestedMax ?? this.config.maxSnapshotChars, 100_000);
-    const nextOffset = parsed.offset + maxChars;
-    const result: SnapshotResult = {
-      snapshotId: parsed.snapshotId, pageId: this.selectedPageId ?? '', url: this.currentPage().url(),
-      title: '', mode: 'full', content: content.slice(parsed.offset, nextOffset),
-      truncated: nextOffset < content.length, untrustedContent: true, warnings: [],
-    };
-    if (result.truncated) result.cursor = Buffer.from(JSON.stringify({ snapshotId: parsed.snapshotId, offset: nextOffset })).toString('base64url');
+    const stored = await this.storeSnapshot({
+      result: created.result,
+      fullContent: created.fullContent,
+      canonicalContent: created.canonicalContent,
+      refs: created.refs,
+      documents: created.documents,
+    });
+    this.canonicalSnapshotByPage.set(pageId, { snapshotId: created.result.snapshotId, content: stored.canonicalContent! });
+    this.lastSnapshotByPage.set(pageId, stored.fullContent.slice(0, PAGE_SNAPSHOT_PREVIEW_CHARS));
+    const result = this.snapshotChunk(stored, 0, maxChars, created.result.nodes);
+    this.recordActivity('snapshot', `${mode} snapshot`, result.url);
     return result;
   }
 
-  private resolveTarget(ref: string): { page: Page; frame: Frame; target: ElementTarget } {
+  private async resolveTarget(ref: string): Promise<{ page: Page; frame: Frame; target: ElementTarget }> {
+    if (!ELEMENT_REF_PATTERN.test(ref)) {
+      throw new TendrilError('STALE_ELEMENT_REF', 'Invalid or stale element reference; take a new snapshot');
+    }
     const target = this.refs.get(ref);
-    if (!target) throw new TendrilError('STALE_ELEMENT_REF', `Unknown or stale element reference ${ref}; take a new snapshot`);
+    if (!target) throw new TendrilError('STALE_ELEMENT_REF', 'Unknown or stale element reference; take a new snapshot');
+    const stale = async (message: string, cause?: unknown): Promise<never> => {
+      this.refs.delete(ref);
+      const snapshot = this.snapshots.get(target.snapshotId);
+      snapshot?.refIds.delete(ref);
+      await target.element.dispose().catch(() => undefined);
+      if (snapshot?.refIds.size === 0) {
+        const documents = [...snapshot.documents];
+        snapshot.documents.clear();
+        await Promise.all(documents.map((document) => document.dispose().catch(() => undefined)));
+      }
+      throw new TendrilError('STALE_ELEMENT_REF', message, cause === undefined ? undefined : { cause });
+    };
     const page = this.pagesById.get(target.pageId);
-    if (!page || page.url() !== target.pageUrl) throw new TendrilError('STALE_ELEMENT_REF', `Element reference ${ref} is stale after navigation; take a new snapshot`);
-    const frame = page.frames()[target.frameIndex];
-    if (!frame || frame.url() !== target.frameUrl) throw new TendrilError('STALE_ELEMENT_REF', `Frame for ${ref} changed; take a new snapshot`);
+    if (!this.snapshots.has(target.snapshotId) || !page || page !== target.page || page.url() !== target.pageUrl) {
+      return stale(`Element reference ${ref} is stale after navigation; take a new snapshot`);
+    }
+    const frame = target.frame;
+    if (!page.frames().includes(frame) || frame.url() !== target.frameUrl) {
+      return stale(`Frame for ${ref} changed; take a new snapshot`);
+    }
+    let live: { connected: boolean; sameDocument: boolean; fingerprint: string };
+    try {
+      live = await target.element.evaluate((element, options) => {
+        const { fingerprintOptions, ownerDocument } = options;
+        const normalize = (value: string | null | undefined): string => (
+          (value ?? '').slice(0, fingerprintOptions.maxTextChars * 4).replace(/\s+/g, ' ').trim().slice(0, fingerprintOptions.maxTextChars)
+        );
+        const escapeIdentifier = (value: string): string => (
+          typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`)
+        );
+        const findReferenced = (candidate: Element, id: string): Element | null => {
+          const root = candidate.getRootNode();
+          if ('getElementById' in root && typeof root.getElementById === 'function') return root.getElementById(id);
+          return candidate.ownerDocument.getElementById(id)
+            ?? (root as Document | ShadowRoot).querySelector?.(`#${escapeIdentifier(id)}`)
+            ?? null;
+        };
+        let remainingNodes = 20_000;
+        const boundedNodeText = (candidate: Element, maxChars = fingerprintOptions.maxTextChars * 4): string => {
+          const parts: string[] = [];
+          const pending: Node[] = [];
+          let current: Node | null = candidate.firstChild;
+          let chars = 0;
+          while (current && remainingNodes > 0 && chars < maxChars) {
+            const node: Node = current;
+            const sibling: Node | null = node.nextSibling;
+            remainingNodes -= 1;
+            if (node.nodeType === 3) {
+              const text = (node.textContent ?? '').slice(0, maxChars - chars);
+              parts.push(text);
+              chars += text.length;
+              current = sibling ?? pending.pop() ?? null;
+              continue;
+            }
+            if (node instanceof Element && node.firstChild) {
+              if (sibling) pending.push(sibling);
+              current = node.firstChild;
+            } else current = sibling ?? pending.pop() ?? null;
+          }
+          return normalize(parts.join(' '));
+        };
+        const referencedText = (candidate: Element, attribute: string): string => {
+          const ids = (candidate.getAttribute(attribute) ?? '').slice(0, fingerprintOptions.maxTextChars * 4).split(/\s+/).filter(Boolean);
+          const parts: string[] = [];
+          let remainingChars = fingerprintOptions.maxTextChars * 4;
+          for (const id of ids) {
+            const referenced = findReferenced(candidate, id.slice(0, 500));
+            if (!referenced || remainingChars <= 0) continue;
+            const text = boundedNodeText(referenced, remainingChars);
+            if (text) { parts.push(text); remainingChars -= text.length; }
+          }
+          return normalize(parts.join(' '));
+        };
+        const tag = element.tagName.toLowerCase();
+        const type = (element.getAttribute('type') ?? '').slice(0, 100).toLowerCase();
+        const labels: string[] = [];
+        const elementLabels = 'labels' in element ? element.labels as NodeListOf<HTMLLabelElement> | null : null;
+        if (elementLabels) {
+          for (let index = 0; index < Math.min(elementLabels.length, 50); index += 1) {
+            const label = elementLabels[index];
+            if (label) labels.push(boundedNodeText(label));
+          }
+        }
+        const semanticValue = tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type)
+          ? (element as HTMLInputElement).value
+          : tag === 'option'
+            ? (element as HTMLOptionElement).value
+            : '';
+        const parts: Array<string | boolean> = [
+          'semantic-v2',
+          tag,
+          ...fingerprintOptions.attributes.map((attribute) => normalize(element.getAttribute(attribute))),
+          ...fingerprintOptions.referenceAttributes.map((attribute) => referencedText(element, attribute)),
+          boundedNodeText(element),
+          normalize(labels.join(' ')),
+          normalize(semanticValue),
+          'disabled' in element && Boolean(element.disabled),
+          'checked' in element && Boolean(element.checked),
+          'selected' in element && Boolean(element.selected),
+          'readOnly' in element && Boolean(element.readOnly),
+          'required' in element && Boolean(element.required),
+          'isContentEditable' in element && Boolean(element.isContentEditable),
+          (element as HTMLElement).hidden,
+        ];
+        let primary = 0x811c9dc5;
+        let secondary = 0x9e3779b9;
+        let length = 0;
+        for (const rawPart of parts) {
+          const part = String(rawPart).slice(0, fingerprintOptions.maxComponentChars);
+          length += part.length;
+          for (let index = 0; index <= part.length; index += 1) {
+            const code = index === part.length ? 0xffff : part.charCodeAt(index);
+            primary = Math.imul(primary ^ code, 0x01000193) >>> 0;
+            secondary = Math.imul(secondary ^ code, 0x85ebca6b) >>> 0;
+          }
+        }
+        const fingerprint = `semantic-v3:${primary.toString(16).padStart(8, '0')}:${secondary.toString(16).padStart(8, '0')}:${length}`
+          .slice(0, fingerprintOptions.maxFingerprintChars);
+        return {
+          connected: element.isConnected,
+          sameDocument: element.ownerDocument === ownerDocument,
+          fingerprint,
+        };
+      }, {
+        fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
+        ownerDocument: target.ownerDocument,
+      });
+    } catch (error) {
+      return stale(`Element reference ${ref} is detached or replaced; take a new snapshot`, error);
+    }
+    if (!live.connected || !live.sameDocument || live.fingerprint !== target.fingerprint) {
+      return stale(`Element reference ${ref} is detached, replaced, or changed; take a new snapshot`);
+    }
     return { page, frame, target };
   }
 
@@ -557,47 +939,59 @@ export class TendrilSession {
     this.touch();
     if (options.action === 'press' && !options.ref) {
       const page = this.currentPage();
-      await page.keyboard.press(options.key ?? 'Enter');
+      const pageId = this.pageId(page);
+      try { await page.keyboard.press(options.key ?? 'Enter'); }
+      finally { await this.invalidatePageRefs(pageId); }
       const result = { url: page.url() };
       this.recordActivity('act', `${options.action} ${options.key ?? 'Enter'}`, result.url);
       return result;
     }
     if (!options.ref) throw new TendrilError('STALE_ELEMENT_REF', 'ref is required for this action');
-    const { page, frame, target } = this.resolveTarget(options.ref);
-    const locator = frame.locator(target.selector).first();
-    if (await locator.count() === 0) throw new TendrilError('STALE_ELEMENT_REF', `Element ${options.ref} no longer exists; take a new snapshot`);
-    switch (options.action) {
-      case 'click': await locator.click(); break;
-      case 'double_click': await locator.dblclick(); break;
-      case 'hover': await locator.hover(); break;
-      case 'focus': await locator.focus(); break;
-      case 'fill': await locator.fill(options.text ?? ''); break;
-      case 'type':
-        await locator.fill('');
-        await locator.pressSequentially(options.text ?? '');
-        break;
-      case 'select':
-        if (options.value !== undefined) await locator.selectOption({ label: options.value });
-        else await locator.selectOption(options.values ?? []);
-        break;
-      case 'check': await locator.check(); break;
-      case 'uncheck': await locator.uncheck(); break;
-      case 'press': await locator.press(options.key ?? 'Enter'); break;
-      case 'scroll': await locator.evaluate((element, delta) => element.scrollBy(delta.x, delta.y), { x: options.deltaX ?? 0, y: options.deltaY ?? 600 }); break;
-      case 'drag': {
-        if (!options.targetRef) throw new TendrilError('STALE_ELEMENT_REF', 'targetRef is required for drag');
-        const destination = this.resolveTarget(options.targetRef);
-        await locator.dragTo(destination.frame.locator(destination.target.selector).first());
-        break;
+    const { page, target } = await this.resolveTarget(options.ref);
+    let destinationPageId: string | undefined;
+    try {
+      switch (options.action) {
+        case 'click': await target.element.click(); break;
+        case 'double_click': await target.element.dblclick(); break;
+        case 'hover': await target.element.hover(); break;
+        case 'focus': await target.element.focus(); break;
+        case 'fill': await target.element.fill(options.text ?? ''); break;
+        case 'type':
+          await target.element.fill('');
+          await target.element.type(options.text ?? '');
+          break;
+        case 'select':
+          if (options.value !== undefined) await target.element.selectOption({ label: options.value });
+          else await target.element.selectOption(options.values ?? []);
+          break;
+        case 'check': await target.element.check(); break;
+        case 'uncheck': await target.element.uncheck(); break;
+        case 'press': await target.element.press(options.key ?? 'Enter'); break;
+        case 'scroll': await target.element.evaluate((element, delta) => element.scrollBy(delta.x, delta.y), { x: options.deltaX ?? 0, y: options.deltaY ?? 600 }); break;
+        case 'drag': {
+          if (!options.targetRef) throw new TendrilError('STALE_ELEMENT_REF', 'targetRef is required for drag');
+          const destination = await this.resolveTarget(options.targetRef);
+          if (destination.page !== page) throw new TendrilError('STALE_ELEMENT_REF', 'Drag refs must belong to the same page');
+          destinationPageId = destination.target.pageId;
+          const [sourceBox, targetBox] = await Promise.all([target.element.boundingBox(), destination.target.element.boundingBox()]);
+          if (!sourceBox || !targetBox) throw new TendrilError('STALE_ELEMENT_REF', 'Drag source or destination is no longer visible; take a new snapshot');
+          await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+          await page.mouse.down();
+          try { await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 10 }); }
+          finally { await page.mouse.up(); }
+          break;
+        }
+        case 'upload': {
+          const files = await Promise.all((options.files ?? []).map((file) => assertPathWithinRoots(file, this.config.workspaceRoots)));
+          await target.element.setInputFiles(files);
+          break;
+        }
       }
-      case 'upload': {
-        const files = await Promise.all((options.files ?? []).map((file) => assertPathWithinRoots(file, this.config.workspaceRoots)));
-        await locator.setInputFiles(files);
-        break;
-      }
+      if (options.submit && ['fill', 'type'].includes(options.action)) await target.element.press('Enter');
+    } finally {
+      await this.invalidatePageRefs(target.pageId);
+      if (destinationPageId && destinationPageId !== target.pageId) await this.invalidatePageRefs(destinationPageId);
     }
-    if (options.submit && ['fill', 'type'].includes(options.action)) await locator.press('Enter');
-    this.refs.clear();
     const result = { url: page.url() };
     this.recordActivity('act', `${options.action}${options.ref ? ` ${options.ref}` : ''}`, result.url);
     return result;
@@ -619,17 +1013,205 @@ export class TendrilSession {
     const page = this.currentPage(options.pageId);
     let result: unknown;
     if (options.selector) {
-      result = await page.locator(options.selector).evaluateAll((nodes) => nodes.map((node) => ({
-        text: node.textContent?.replace(/\s+/g, ' ').trim(),
-        html: node.outerHTML,
-        attributes: Object.fromEntries([...node.attributes].map((attribute) => [attribute.name, attribute.value])),
-      })));
+      const responseLimit = Number.isFinite(this.config.maxResponseBodyBytes) && this.config.maxResponseBodyBytes > 0
+        ? Math.floor(this.config.maxResponseBodyBytes)
+        : 1;
+      result = await page.evaluate(({ selector, limits }) => {
+        const selected = document.querySelectorAll(selector);
+        const output: Array<{ text: string; html: string; attributes: Record<string, string>; truncated: boolean }> = [];
+        let payloadRemaining = limits.maxPayloadChars;
+        let cloneNodesRemaining = limits.maxCloneNodes;
+        let textNodesRemaining = limits.maxTextNodes;
+        const sensitiveControl = new RegExp(limits.sensitiveControlPattern, 'i');
+        const sensitiveUrlKey = new RegExp(limits.sensitiveUrlKeyPattern, 'i');
+        const redactUrl = (value: string): string => {
+          try {
+            const url = new URL(value, /^https?:/i.test(document.baseURI) ? document.baseURI : 'https://redaction.invalid/');
+            for (const key of [...url.searchParams.keys()]) if (sensitiveUrlKey.test(key.slice(0, 500))) url.searchParams.set(key, '[redacted]');
+            const rawHash = url.hash.slice(1);
+            const queryIndex = rawHash.indexOf('?');
+            const prefix = queryIndex >= 0 ? rawHash.slice(0, queryIndex + 1) : '';
+            const parameterText = queryIndex >= 0 ? rawHash.slice(queryIndex + 1) : rawHash;
+            if (parameterText.includes('=')) {
+              const hash = new URLSearchParams(parameterText);
+              for (const key of [...hash.keys()]) if (sensitiveUrlKey.test(key.slice(0, 500))) hash.set(key, '[redacted]');
+              url.hash = `${prefix}${hash.toString()}`;
+            }
+            return url.toString();
+          } catch { return value; }
+        };
+        const redactText = (value: string): string => value
+          .replace(/(?:https?:\/\/|\/|#|\?)[^\s"'<>]*/gi, (candidate) => candidate.includes('=') ? redactUrl(candidate) : candidate)
+          .replace(/(\b(?:api[_-]?key|key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|password|secret|token|credential|signature|sig|code|awsaccesskeyid|googleaccessid)\s*[=:]\s*)([^\s&;,]+)/gi, '$1[redacted]');
+        const isSensitiveControl = (element: Element): boolean => (
+          element.tagName.toLowerCase() === 'input' && (element.getAttribute('type') ?? '').toLowerCase() === 'hidden'
+        ) || sensitiveControl.test([
+          element.getAttribute('type'), element.getAttribute('name'), element.getAttribute('id'),
+          element.getAttribute('autocomplete'), element.getAttribute('aria-label'),
+        ].map((value) => value?.slice(0, 500)).filter(Boolean).join(' '));
+        const boundedText = (root: Element, maxChars: number): { value: string; truncated: boolean } => {
+          if (isSensitiveControl(root)) return { value: '[redacted]'.slice(0, maxChars), truncated: false };
+          const parts: string[] = [];
+          const pending: Node[] = [];
+          let current: Node | null = root.firstChild;
+          let chars = 0;
+          while (current && textNodesRemaining > 0 && chars < maxChars) {
+            const node: Node = current;
+            const sibling: Node | null = node.nextSibling;
+            textNodesRemaining -= 1;
+            if (node.nodeType === 3) {
+              const source = (node.textContent ?? '').slice(0, maxChars - chars);
+              const text = redactText(source).slice(0, maxChars - chars);
+              parts.push(text);
+              chars += text.length;
+              current = sibling ?? pending.pop() ?? null;
+            } else if (node instanceof Element && isSensitiveControl(node)) {
+              const text = '[redacted]'.slice(0, maxChars - chars);
+              parts.push(text);
+              chars += text.length;
+              current = sibling ?? pending.pop() ?? null;
+            } else if (node instanceof Element && node.firstChild) {
+              if (sibling) pending.push(sibling);
+              current = node.firstChild;
+            } else current = sibling ?? pending.pop() ?? null;
+          }
+          return { value: parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, maxChars), truncated: Boolean(current || pending.length) };
+        };
+        const encodedLength = (character: string, attribute: boolean): number => {
+          if (character === '&') return 5;
+          if (character === '<' || character === '>') return 4;
+          if (attribute && character === '"') return 6;
+          return character.length;
+        };
+        const fitEncoded = (value: string, available: number, attribute: boolean): { value: string; cost: number; complete: boolean } => {
+          let cost = 0;
+          let end = 0;
+          for (const character of value) {
+            const next = encodedLength(character, attribute);
+            if (cost + next > available) break;
+            cost += next;
+            end += character.length;
+          }
+          return { value: value.slice(0, end), cost, complete: end === value.length };
+        };
+        const cloneBounded = (root: Element, maxChars: number): { html: string; truncated: boolean } => {
+          let serializationRemaining = maxChars;
+          let truncated = false;
+          const copy = (source: Element, depth: number): Element | undefined => {
+            if (depth > limits.maxDepth || cloneNodesRemaining <= 0) { truncated = true; return undefined; }
+            cloneNodesRemaining -= 1;
+            const tag = source.tagName.toLowerCase().slice(0, 100);
+            const elementCost = 5 + tag.length * 2;
+            if (serializationRemaining < elementCost) { truncated = true; return undefined; }
+            serializationRemaining -= elementCost;
+            const clone = document.createElementNS(source.namespaceURI, tag);
+            const attributes = Math.min(source.attributes.length, limits.maxAttributes);
+            for (let index = 0; index < attributes; index += 1) {
+              const attribute = source.attributes.item(index);
+              if (!attribute) continue;
+              const name = attribute.name.slice(0, 200);
+              const baseCost = name.length + 4;
+              if (serializationRemaining <= baseCost) { truncated = true; break; }
+              const lowerName = name.toLowerCase();
+              const sourceValue = attribute.value.slice(0, 2_000);
+              const value = sensitiveControl.test(lowerName) || (isSensitiveControl(source) && lowerName === 'value')
+                ? '[redacted]'
+                : ['href', 'src', 'action', 'formaction', 'poster'].includes(lowerName)
+                  ? redactUrl(sourceValue)
+                  : sourceValue;
+              const fitted = fitEncoded(value, serializationRemaining - baseCost, true);
+              clone.setAttribute(name, fitted.value);
+              serializationRemaining -= baseCost + fitted.cost;
+              if (!fitted.complete || attribute.value.length > sourceValue.length) truncated = true;
+              if (!fitted.complete) break;
+            }
+            if (source.attributes.length > attributes) truncated = true;
+            if (isSensitiveControl(source) && !clone.hasAttribute('value') && serializationRemaining > 20) {
+              clone.setAttribute('value', '[redacted]');
+              serializationRemaining -= 20;
+            }
+            if (isSensitiveControl(source)) {
+              const fitted = fitEncoded('[redacted]', serializationRemaining, false);
+              clone.append(document.createTextNode(fitted.value));
+              serializationRemaining -= fitted.cost;
+              if (!fitted.complete) truncated = true;
+              return clone;
+            }
+            for (let child = source.firstChild; child; child = child.nextSibling) {
+              if (serializationRemaining <= 0 || cloneNodesRemaining <= 0) { truncated = true; break; }
+              if (child.nodeType === 3) {
+                cloneNodesRemaining -= 1;
+                const sourceText = (child.textContent ?? '').slice(0, serializationRemaining);
+                const fitted = fitEncoded(redactText(sourceText), serializationRemaining, false);
+                clone.append(document.createTextNode(fitted.value));
+                serializationRemaining -= fitted.cost;
+                if (!fitted.complete || sourceText.length < (child.textContent ?? '').length) truncated = true;
+              } else if (child.nodeType === 1) {
+                const copied = copy(child as Element, depth + 1);
+                if (!copied) break;
+                clone.append(copied);
+              }
+            }
+            return clone;
+          };
+          const clone = copy(root, 0);
+          const html = clone ? (clone as HTMLElement).outerHTML.slice(0, maxChars) : '';
+          return { html, truncated: truncated || html.length >= maxChars };
+        };
+        const count = Math.min(selected.length, limits.maxResults);
+        for (let index = 0; index < count && payloadRemaining > 32; index += 1) {
+          const node = selected.item(index);
+          if (!(node instanceof Element)) continue;
+          let truncated = selected.length > limits.maxResults;
+          const text = boundedText(node, Math.min(limits.maxTextChars, payloadRemaining));
+          payloadRemaining -= text.value.length;
+          truncated ||= text.truncated;
+          const cloned = cloneBounded(node, Math.min(limits.maxHtmlChars, payloadRemaining));
+          payloadRemaining -= cloned.html.length;
+          truncated ||= cloned.truncated;
+          const attributes: Record<string, string> = {};
+          const attributeCount = Math.min(node.attributes.length, limits.maxAttributes);
+          for (let attributeIndex = 0; attributeIndex < attributeCount && payloadRemaining > 8; attributeIndex += 1) {
+            const attribute = node.attributes.item(attributeIndex);
+            if (!attribute) continue;
+            const name = attribute.name.slice(0, Math.min(200, payloadRemaining));
+            const lowerName = name.toLowerCase();
+            const available = Math.max(0, payloadRemaining - name.length - 4);
+            const rawValue = sensitiveControl.test(lowerName) || (isSensitiveControl(node) && lowerName === 'value')
+              ? '[redacted]'
+              : ['href', 'src', 'action', 'formaction', 'poster'].includes(lowerName)
+                ? redactUrl(attribute.value.slice(0, 2_000))
+                : attribute.value.slice(0, 2_000);
+            const value = rawValue.slice(0, available);
+            attributes[name] = value;
+            payloadRemaining -= name.length + value.length + 4;
+            if (value.length < rawValue.length || attribute.value.length > 2_000) truncated = true;
+          }
+          if (node.attributes.length > attributeCount) truncated = true;
+          output.push({ text: text.value, html: cloned.html, attributes, truncated });
+        }
+        return output;
+      }, {
+        selector: options.selector,
+        limits: {
+          maxResults: 100,
+          maxTextChars: 5_000,
+          maxHtmlChars: 10_000,
+          maxAttributes: 50,
+          maxCloneNodes: 5_000,
+          maxTextNodes: 5_000,
+          maxDepth: 100,
+          maxPayloadChars: Math.min(500_000, Math.max(1, Math.floor(responseLimit / 8))),
+          sensitiveControlPattern: SENSITIVE_CONTROL_PATTERN_SOURCE,
+          sensitiveUrlKeyPattern: SENSITIVE_URL_KEY_PATTERN_SOURCE,
+        },
+      });
     } else {
       const format = options.format ?? 'all';
       if (format === 'forms') result = await extractForms(page);
       else if (format === 'tables') result = await extractTables(page);
       else {
-        const extracted = await extractPage(page);
+        const extracted = await extractPage(page, { maxChars: this.config.maxResponseBodyBytes });
         result = format === 'all' ? extracted : extracted[format];
       }
     }
@@ -637,16 +1219,33 @@ export class TendrilSession {
     return result;
   }
 
+  async extractWithSafety(
+    options: { pageId?: string; format?: 'all' | 'html' | 'markdown' | 'text' | 'links' | 'metadata' | 'forms' | 'tables'; selector?: string },
+  ): Promise<ContentSafetyEnvelope> {
+    const data = await this.extract(options);
+    const inherited = typeof data === 'object' && data !== null && 'warnings' in data && Array.isArray(data.warnings)
+      ? data.warnings.filter((warning): warning is string => typeof warning === 'string')
+      : [];
+    return { data, untrustedContent: true, warnings: [...new Set([...inherited, ...mergeInjectionWarnings(data)])] };
+  }
+
   async capture(options: BrowserCaptureOptions): Promise<BrowserCaptureResult> {
-    const page = this.currentPage(options.pageId);
+    if (options.ref && options.format === 'pdf') {
+      throw new TendrilError('UNSUPPORTED_OPERATION', 'Element refs are not supported for PDF capture');
+    }
+    const resolvedTarget = options.ref && options.format !== 'pdf' ? await this.resolveTarget(options.ref) : undefined;
+    const page = options.pageId ? this.currentPage(options.pageId) : resolvedTarget?.page ?? this.currentPage();
     const type = options.format ?? 'png';
     let buffer: Buffer;
     if (type === 'pdf') {
       buffer = await page.pdf({ printBackground: true });
     } else {
-      const target = options.ref ? this.resolveTarget(options.ref) : undefined;
+      const target = resolvedTarget;
+      if (target && target.page !== page) {
+        throw new TendrilError('STALE_ELEMENT_REF', 'Capture ref must belong to the requested page');
+      }
       buffer = target
-        ? await target.frame.locator(target.target.selector).first().screenshot({ type, quality: type === 'jpeg' ? options.quality ?? 80 : undefined })
+        ? await target.target.element.screenshot({ type, quality: type === 'jpeg' ? options.quality ?? 80 : undefined })
         : await page.screenshot({ type, fullPage: options.fullPage ?? false, quality: type === 'jpeg' ? options.quality ?? 80 : undefined });
     }
     const result: BrowserCaptureResult = {
@@ -664,12 +1263,43 @@ export class TendrilSession {
 
   async evaluate(expression: string, pageId?: string): Promise<unknown> {
     const page = this.currentPage(pageId);
-    const result = await page.evaluate((source) => {
-      // This is intentionally page-scoped and cannot access the Tendril Node process.
-      return (0, eval)(source) as unknown;
-    }, expression);
-    this.recordActivity('evaluate', expression.slice(0, 200), page.url());
-    return result;
+    const id = this.pageId(page);
+    try {
+      const result = await page.evaluate((source) => {
+        // This is intentionally page-scoped and cannot access the Tendril Node process.
+        return (0, eval)(source) as unknown;
+      }, expression);
+      this.recordActivity('evaluate', expression.slice(0, 200), page.url());
+      return result;
+    } finally {
+      await this.invalidatePageRefs(id);
+    }
+  }
+
+  async fillForm(selectors: Record<string, string>): Promise<{ url: string; filled: string[] }> {
+    const page = this.currentPage();
+    const pageId = this.pageId(page);
+    try {
+      for (const [selector, value] of Object.entries(selectors)) {
+        const locator = page.locator(selector).first();
+        if (await locator.count() === 0) throw new TendrilError('STALE_ELEMENT_REF', `Form field not found: ${selector}`);
+        const control = await locator.evaluate((element) => ({
+          tag: element.tagName.toLowerCase(),
+          type: element instanceof HTMLInputElement ? element.type.toLowerCase() : '',
+        }));
+        if (control.tag === 'select') {
+          await locator.selectOption({ label: value }).catch(() => locator.selectOption(value));
+        } else if (control.type === 'checkbox' || control.type === 'radio') {
+          if (/^(true|1|yes|on|checked)$/i.test(value)) await locator.check();
+          else await locator.uncheck();
+        } else {
+          await locator.fill(value);
+        }
+      }
+      return { url: page.url(), filled: Object.keys(selectors) };
+    } finally {
+      await this.invalidatePageRefs(pageId);
+    }
   }
 
   getActivityLog(): ActivityEntry[] { return this.activityLog.map((entry) => ({ ...entry })); }
@@ -747,8 +1377,8 @@ export class TendrilSession {
     await this.importCookies(data.cookies as AddCookie[]);
     const page = this.currentPage();
     if (data.url === 'about:blank') {
+      await this.invalidatePageRefs(this.pageId(page));
       await page.goto(data.url);
-      this.refs.clear();
     } else {
       await this.navigate({ pageId: this.pageId(page), url: data.url });
     }
@@ -837,19 +1467,24 @@ export class TendrilSession {
 
   async configure(options: { viewport?: { width: number; height: number }; headers?: Record<string, string>; geolocation?: { latitude: number; longitude: number; accuracy?: number }; offline?: boolean; permissions?: string[]; origin?: string; colorScheme?: 'dark' | 'light' | 'no-preference'; reducedMotion?: 'reduce' | 'no-preference'; timezoneId?: string; userAgent?: string; httpCredentials?: { username: string; password: string; origin?: string } | null }): Promise<void> {
     const page = this.currentPage();
-    if (options.viewport) await page.setViewportSize(options.viewport);
-    if (options.headers) await this.chromium.context.setExtraHTTPHeaders(options.headers);
-    if (options.geolocation) await this.chromium.context.setGeolocation(options.geolocation);
-    if (options.offline !== undefined) await this.chromium.context.setOffline(options.offline);
-    if (options.httpCredentials !== undefined) await this.chromium.context.setHTTPCredentials(options.httpCredentials);
-    if (options.permissions) await this.chromium.context.grantPermissions(options.permissions, options.origin ? { origin: options.origin } : undefined);
-    if (options.colorScheme || options.reducedMotion) await page.emulateMedia({ colorScheme: options.colorScheme, reducedMotion: options.reducedMotion });
-    if (options.timezoneId || options.userAgent) {
-      const cdp = await this.chromium.context.newCDPSession(page);
-      try {
-        if (options.timezoneId) await cdp.send('Emulation.setTimezoneOverride', { timezoneId: options.timezoneId });
-        if (options.userAgent) await cdp.send('Emulation.setUserAgentOverride', { userAgent: options.userAgent });
-      } finally { await cdp.detach(); }
+    const pageId = this.pageId(page);
+    try {
+      if (options.viewport) await page.setViewportSize(options.viewport);
+      if (options.headers) await this.chromium.context.setExtraHTTPHeaders(options.headers);
+      if (options.geolocation) await this.chromium.context.setGeolocation(options.geolocation);
+      if (options.offline !== undefined) await this.chromium.context.setOffline(options.offline);
+      if (options.httpCredentials !== undefined) await this.chromium.context.setHTTPCredentials(options.httpCredentials);
+      if (options.permissions) await this.chromium.context.grantPermissions(options.permissions, options.origin ? { origin: options.origin } : undefined);
+      if (options.colorScheme || options.reducedMotion) await page.emulateMedia({ colorScheme: options.colorScheme, reducedMotion: options.reducedMotion });
+      if (options.timezoneId || options.userAgent) {
+        const cdp = await this.chromium.context.newCDPSession(page);
+        try {
+          if (options.timezoneId) await cdp.send('Emulation.setTimezoneOverride', { timezoneId: options.timezoneId });
+          if (options.userAgent) await cdp.send('Emulation.setUserAgentOverride', { userAgent: options.userAgent });
+        } finally { await cdp.detach(); }
+      }
+    } finally {
+      await this.invalidatePageRefs(pageId);
     }
   }
 

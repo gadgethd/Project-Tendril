@@ -68,6 +68,12 @@ export interface BrowserCaptureResult {
   savePath?: string;
 }
 
+export interface ContentSafetyEnvelope<T = unknown> {
+  data: T;
+  untrustedContent: true;
+  warnings: string[];
+}
+
 export interface PageSummary {
   id: PageId;
   url: string;
@@ -87,7 +93,16 @@ export interface SnapshotNode {
   focused?: boolean;
   level?: number;
   selected?: boolean;
+  pressed?: boolean | 'mixed';
+  readonly?: boolean;
+  required?: boolean;
   children?: SnapshotNode[];
+}
+
+export interface SnapshotDiffSummary {
+  added: number;
+  removed: number;
+  unchanged: number;
 }
 
 export interface SnapshotResult {
@@ -95,7 +110,10 @@ export interface SnapshotResult {
   pageId: PageId;
   url: string;
   title: string;
+  frameUrls: string[];
   mode: 'interactive' | 'reader' | 'full' | 'diff';
+  baselineSnapshotId?: SnapshotId;
+  diffSummary?: SnapshotDiffSummary;
   content: string;
   nodes?: SnapshotNode[];
   cursor?: string;
@@ -135,6 +153,7 @@ export interface EvidenceChunk {
   retrievedAt: string;
   contentHash: string;
   truncated?: boolean;
+  warnings?: string[];
 }
 
 export interface CrawlResult {
@@ -147,6 +166,7 @@ export interface CrawlResult {
   links: string[];
   error?: string;
   truncated?: { title?: boolean; markdown?: boolean; links?: boolean };
+  warnings?: string[];
 }
 
 export interface CrawlJob {

@@ -5,6 +5,7 @@ export type TendrilErrorCode =
   | 'PROFILE_IN_USE'
   | 'PAGE_NOT_FOUND'
   | 'STALE_ELEMENT_REF'
+  | 'INVALID_CURSOR'
   | 'NETWORK_BLOCKED'
   | 'INVALID_URL'
   | 'CANCELLED'
