@@ -75,6 +75,10 @@ const optionalUrl = z.string().trim().url()
   .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), 'must use http or https')
   .refine((value) => !new URL(value).username && !new URL(value).password, 'must not embed credentials')
   .optional();
+const ownedDirectory = (label: string) => boundedString(label).refine((value) => {
+  const resolved = path.resolve(value);
+  return resolved !== path.parse(resolved).root;
+}, `${label} must not be a filesystem root`);
 
 const configObject = z.strictObject({
   host: boundedString('host', 255).regex(/^[^\s/]+$/, 'host must not contain whitespace or a path'),
@@ -95,8 +99,8 @@ const configObject = z.strictObject({
   searxngUrl: optionalUrl,
   googleSearchApiKey: secretString('googleSearchApiKey').optional(),
   googleSearchCx: secretString('googleSearchCx').optional(),
-  dataDir: boundedString('dataDir'),
-  runtimeDir: boundedString('runtimeDir'),
+  dataDir: ownedDirectory('dataDir'),
+  runtimeDir: ownedDirectory('runtimeDir'),
   token: secretString('token').optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
 });

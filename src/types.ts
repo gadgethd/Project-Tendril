@@ -121,12 +121,15 @@ export interface EvidenceChunk {
 }
 
 export interface CrawlResult {
+  requestedUrl: string;
+  finalUrl: string;
   url: string;
   status: number | null;
   title?: string;
   markdown?: string;
   links: string[];
   error?: string;
+  truncated?: { title?: boolean; markdown?: boolean; links?: boolean };
 }
 
 export interface CrawlJob {
@@ -137,8 +140,18 @@ export interface CrawlJob {
   completedAt?: string;
   queued: number;
   visited: number;
-  results: CrawlResult[];
+  resultCount: number;
   error?: string;
+}
+
+export interface CrawlResultPage {
+  jobId: string;
+  status: CrawlJob['status'];
+  offset: number;
+  limit: number;
+  total: number;
+  results: CrawlResult[];
+  nextOffset?: number;
 }
 
 export interface ConsoleEntry {

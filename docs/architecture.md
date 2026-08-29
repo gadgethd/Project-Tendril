@@ -25,10 +25,12 @@ Reader extraction runs Mozilla Readability against serialized HTML and converts 
 
 - Stdio MCP starts an embedded runtime and writes protocol data only to stdout. Logs use stderr.
 - Streamable HTTP MCP is stateless at the transport layer while sharing the local browser manager.
-- REST quick actions create disposable sessions unless a `sessionId` is supplied.
+- REST quick actions acquire reference-counted leases on disposable sessions unless a `sessionId` is supplied. Concurrent actions for one named profile share the session, and its final lease release performs cleanup.
 - CDP traffic is forwarded byte-for-byte to the selected browser process after HTTP/WebSocket authentication.
 - The dashboard is static HTML and uses the same REST calls as external clients.
 
 ## Failure model
 
 Session-independent work such as extraction, search parsing, and crawl queue handling is disposable. A failed page or provider produces a typed error or partial crawl result. Chromium crashes affect only one session. Shutdown kills the complete Chromium process group, closes proxy connections, and removes ephemeral state.
+
+Completed crawl jobs expire after 30 minutes even when no later API request arrives. Retained markdown is bounded per page and per job, and result pagination prevents a single status response from copying the complete job history.

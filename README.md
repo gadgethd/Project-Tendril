@@ -237,6 +237,8 @@ If `TENDRIL_TOKEN` is not set, Project Tendril creates a random token and stores
 - Linux: `~/.local/share/project-tendril/http-token`
 - Other platforms: the operating system's equivalent user data directory
 
+On POSIX, Tendril validates owner-only permissions and ownership for this file. On Windows, token privacy inherits the ACL on the configured data directory; restrict ACLs on custom or shared paths, or supply `TENDRIL_TOKEN` through your secret manager.
+
 ### Recommended agent workflow
 
 1. Create an ephemeral session with `browser_session`.
@@ -277,7 +279,7 @@ The MCP resource `tendril://status` reports runtime version and active-session s
 
 ## REST and CDP
 
-All endpoints except `/health`, `/dashboard`, and `/openapi.json` require the bearer token. The service binds to loopback by default.
+Only `/health`, `/dashboard`, and the root dashboard redirect are public. MCP, REST, metrics, OpenAPI, and CDP access require authentication even from loopback or private-network peers. The service binds to loopback by default.
 
 ### Extract Markdown from a rendered page
 
@@ -327,9 +329,9 @@ const pages = context.pages();
 console.log(await pages[0].title());
 ```
 
-Treat possession of a CDP URL like possession of the bearer token: an authenticated CDP client has complete control of that Tendril browser session.
+CDP URLs contain a short-lived capability bound to one Tendril session; they never contain the master bearer token. Treat possession of an unexpired CDP URL as full control of that browser session.
 
-The running service exposes a compact OpenAPI document at [http://127.0.0.1:3210/openapi.json](http://127.0.0.1:3210/openapi.json).
+The authenticated service exposes a compact OpenAPI document at `http://127.0.0.1:3210/openapi.json`.
 
 ## Search, research, and crawling
 
@@ -349,7 +351,8 @@ Configure a self-hosted SearXNG instance by setting `searxngUrl` and adding `sea
 - A maximum depth of 5.
 - Same-origin restriction enabled by default.
 - `robots.txt` compliance enabled by default.
-- Cancellation, status, partial results, and per-page errors.
+- Joinable cancellation, compact status, paginated partial results, and per-page errors.
+- At most 100 retained jobs, with completed jobs expiring after 30 minutes.
 
 Search providers and websites may rate-limit automated access. Project Tendril reports the failure or tries the next configured search provider; it does not apply stealth patches by default.
 
@@ -427,7 +430,7 @@ Configuration precedence is:
 | `searxngUrl` | `TENDRIL_SEARXNG_URL` | unset | Optional self-hosted SearXNG URL |
 | `dataDir` | `TENDRIL_DATA_DIR` | platform data directory | Named profiles and HTTP token |
 | `runtimeDir` | `TENDRIL_RUNTIME_DIR` | platform runtime directory | Ephemeral session state |
-| `token` | `TENDRIL_TOKEN` | generated | HTTP, MCP, metrics, and CDP bearer token |
+| `token` | `TENDRIL_TOKEN` | generated | Master HTTP, MCP, REST, and metrics bearer token; also signs short-lived per-session CDP capabilities |
 | `logLevel` | `TENDRIL_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 
 Action timeout, navigation timeout, snapshot size, and maximum response-body size can also be set in the JSON configuration. See [tendril.config.example.json](tendril.config.example.json) and [src/config.ts](src/config.ts) for the complete schema and defaults.
@@ -458,7 +461,8 @@ Project Tendril assumes every URL, page, frame, script, download, and MCP argume
 ### Profile and filesystem boundary
 
 - Project Tendril never opens the user's normal Chrome or Chromium profile.
-- Named profiles are opt-in and locked to one live session.
+- Named profiles are opt-in and locked to one live session; deletion acquires the same exclusive lock before removing profile data.
+- Profile locks fail closed after an unclean exit. After verifying that no Tendril process owns the profile, remove the reported `.profile-locks/<name>.lock` file explicitly before restarting it; Tendril never reclaims stale locks automatically because replacing a lock safely cannot be guaranteed portably.
 - Upload paths are canonicalized and restricted to configured workspace roots.
 - Ephemeral profiles are deleted on close.
 - Chromium is refused when Project Tendril runs as root unless an explicit development override is supplied.

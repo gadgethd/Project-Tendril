@@ -7,8 +7,11 @@ import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { runDoctor } from './doctor.js';
 import { createRuntime } from './runtime.js';
+import { acquireProfileFileLock } from './browser/profile-lock.js';
+import { validateProfileName } from './browser/profile-name.js';
 import { runStdioMcp } from './server/mcp.js';
-import { startHttpServer } from './server/http.js';
+import { advertisedHost, formatUrlAuthority, startHttpServer } from './server/http.js';
+import { pathWithinOwnedRoot } from './util.js';
 const program = new Command();
 
 program
@@ -33,7 +36,7 @@ program.command('serve')
     } });
     const runtime = await createRuntime(config);
     const httpServer = await startHttpServer({ ...runtime });
-    process.stdout.write(`Project Tendril 1.1.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${config.host}:${httpServer.port}/mcp\n`);
+    process.stdout.write(`Project Tendril 1.1.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${formatUrlAuthority(advertisedHost(config.host), httpServer.port)}/mcp\n`);
     await waitForShutdown(async () => { await httpServer.close(); await runtime.close(); });
   });
 
@@ -82,11 +85,18 @@ profiles.command('list').action(async () => {
   } catch { /* No profiles yet. */ }
 });
 profiles.command('delete <name>').description('Permanently delete a named profile').action(async (name: string) => {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) throw new Error('Invalid profile name');
+  const profile = validateProfileName(name);
   const config = await loadConfig({ configPath: program.opts<{ config?: string }>().config });
-  const target = path.join(config.dataDir, 'profiles', name);
-  await rm(target, { recursive: true, force: true });
-  process.stdout.write(`Deleted profile ${name}. This cannot be recovered.\n`);
+  const target = pathWithinOwnedRoot(pathWithinOwnedRoot(config.dataDir, 'profiles'), profile);
+  const lock = await acquireProfileFileLock(config.dataDir, profile);
+  try {
+    // profile is a portable basename and target is contained beneath the operator-owned profiles root.
+    // lgtm[js/path-injection]
+    await rm(target, { recursive: true, force: true });
+  } finally {
+    await lock.release();
+  }
+  process.stdout.write(`Deleted profile ${profile}. This cannot be recovered.\n`);
 });
 
 async function waitForShutdown(close: () => Promise<void>, stdin = false): Promise<void> {

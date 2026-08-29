@@ -83,7 +83,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Start hardened container
-        run: docker run --detach --rm --name project-tendril-ci --publish 127.0.0.1:3210:3210 --ipc=host --read-only --tmpfs /tmp:rw,nosuid,nodev,size=1g --security-opt seccomp=seccomp_profile.json --cap-drop ALL --cap-add SYS_CHROOT --env TENDRIL_TOKEN=ci-token project-tendril:ci
+        run: docker run --detach --rm --name project-tendril-ci --publish 127.0.0.1:3210:3210 --ipc=host --read-only --tmpfs /tmp:rw,nosuid,nodev,size=1g --security-opt seccomp=seccomp_profile.json --cap-drop ALL --cap-add SYS_CHROOT --env TENDRIL_TOKEN=ci-token-for-project-tendril-smoke-test project-tendril:ci
 
       - name: Wait for health endpoint
         run: |
@@ -100,7 +100,7 @@ jobs:
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:3210';
           const headers = {
-            authorization: 'Bearer ci-token',
+            authorization: 'Bearer ci-token-for-project-tendril-smoke-test',
             'content-type': 'application/json',
           };
 

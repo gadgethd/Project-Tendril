@@ -66,6 +66,7 @@ describe('configuration', () => {
     [{ searxngUrl: 'https://user:password@example.test' }, 'must not embed credentials'],
     [{ googleSearchApiKey: 'key-without-cx' }, 'configured together'],
     [{ dataDir: '/tmp/shared', runtimeDir: '/tmp/shared' }, 'must be different'],
+    [{ dataDir: path.parse(process.cwd()).root }, 'must not be a filesystem root'],
   ])('rejects invalid file configuration %#', async (value, message) => {
     const directory = await temporaryDirectory();
     const configPath = path.join(directory, 'config.json');

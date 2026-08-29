@@ -8,6 +8,7 @@ export type TendrilErrorCode =
   | 'NETWORK_BLOCKED'
   | 'INVALID_URL'
   | 'TIMEOUT'
+  | 'CANCELLED'
   | 'OUTPUT_LIMIT'
   | 'FILE_ACCESS_DENIED'
   | 'BROWSER_LAUNCH_FAILED'

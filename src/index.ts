@@ -1,4 +1,4 @@
-export { BrowserManager } from './browser/manager.js';
+export { BrowserManager, type SessionLease } from './browser/manager.js';
 export { TendrilSession } from './browser/session.js';
 export { SearchService } from './browser/search.js';
 export { CrawlService } from './browser/crawl.js';

@@ -50,8 +50,46 @@ export class Logger {
   error(message: string, fields?: Record<string, unknown>): void { this.log('error', message, fields); }
 }
 
+export function safePathBasename(value: string, label = 'Path component'): string {
+  if (
+    value.length === 0
+    || value === '.'
+    || value === '..'
+    || value !== path.posix.basename(value)
+    || value !== path.win32.basename(value)
+    || value.includes('\0')
+  ) {
+    throw new TendrilError('CONFIGURATION_ERROR', `${label} must be a safe filename component`);
+  }
+  return value;
+}
+
+export function pathWithinOwnedRoot(root: string, ...components: string[]): string {
+  const resolvedRoot = path.resolve(root);
+  const safeComponents = components.map((component) => safePathBasename(component));
+  const candidate = path.resolve(resolvedRoot, ...safeComponents);
+  const relative = path.relative(resolvedRoot, candidate);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new TendrilError('CONFIGURATION_ERROR', 'Constructed path must be a child of its owned root');
+  }
+  return candidate;
+}
+
+export function assertPathWithinOwnedRoot(filePath: string, root: string, label = 'Path'): string {
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(filePath);
+  const relative = path.relative(resolvedRoot, resolvedPath);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new TendrilError('CONFIGURATION_ERROR', `${label} must be a child of its owned root`);
+  }
+  return resolvedPath;
+}
+
 export async function ensureDir(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const resolved = path.resolve(directory);
+  // The directory is an operator-selected root or a child produced by pathWithinOwnedRoot.
+  // lgtm[js/path-injection]
+  await mkdir(resolved, { recursive: true, mode: 0o700 });
 }
 
 export async function assertPathWithinRoots(filePath: string, roots: string[]): Promise<string> {
@@ -102,7 +140,8 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: st
     promise,
     new Promise<T>((_, reject) => {
       timer = setTimeout(() => reject(new TendrilError('TIMEOUT', `${label} timed out after ${timeoutMs}ms`, { retryable: true })), timeoutMs);
-      timer.unref();
+      // Cleanup deadlines must keep the process alive until they settle. Otherwise an
+      // unresolved operation can let Node exit before its timeout reports failure.
     }),
   ]).finally(() => {
     if (timer) clearTimeout(timer);

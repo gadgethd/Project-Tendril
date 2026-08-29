@@ -10,10 +10,17 @@ import type {
   NetworkEntry, PageId, PageSummary, SessionCreateOptions, SessionExport, SessionHealth, SessionId,
   SessionInfo, SnapshotResult, TendrilConfig,
 } from '../types.js';
-import { assertPathWithinRoots, newId, type Logger } from '../util.js';
+import {
+  assertPathWithinOwnedRoot, assertPathWithinRoots, newId, pathWithinOwnedRoot, withTimeout, type Logger,
+} from '../util.js';
 import { launchChromium, type ChromiumProcess } from './chromium.js';
 import { extractForms, extractPage, extractTables } from './extract.js';
 import { createSnapshot, type ElementTarget } from './snapshot.js';
+
+interface SessionCreateDependencies {
+  launch?: typeof launchChromium;
+  proxy?: EgressProxy;
+}
 
 interface DownloadEntry {
   id: string;
@@ -43,6 +50,7 @@ export class TendrilSession {
   readonly ephemeral: boolean;
   readonly headless: boolean;
   readonly profile: string | undefined;
+  readonly createOptions: SessionCreateOptions;
   readonly userDataDir: string;
   readonly proxy: EgressProxy;
   readonly chromium: ChromiumProcess;
@@ -60,11 +68,12 @@ export class TendrilSession {
   private readonly snapshotContents = new Map<string, string>();
   private selectedPageId?: PageId;
   private activeDialog?: DialogEntry;
-  private closed = false;
+  private closePromise?: Promise<void>;
 
   private constructor(
     id: string,
     profile: string | undefined,
+    createOptions: SessionCreateOptions,
     userDataDir: string,
     proxy: EgressProxy,
     private readonly networkPolicy: NetworkPolicy,
@@ -75,9 +84,13 @@ export class TendrilSession {
   ) {
     this.id = id;
     this.profile = profile;
+    this.createOptions = structuredClone(createOptions);
     this.ephemeral = profile === undefined;
     this.headless = headless;
-    this.userDataDir = userDataDir;
+    const ownedSessionRoot = profile
+      ? pathWithinOwnedRoot(config.dataDir, 'profiles')
+      : pathWithinOwnedRoot(config.runtimeDir, 'sessions');
+    this.userDataDir = assertPathWithinOwnedRoot(userDataDir, ownedSessionRoot, 'Browser session directory');
     this.proxy = proxy;
     this.chromium = chromiumProcess;
     for (const page of chromiumProcess.context.pages()) this.attachPage(page);
@@ -91,16 +104,17 @@ export class TendrilSession {
     createOptions: SessionCreateOptions;
     config: TendrilConfig;
     logger: Logger;
-  }): Promise<TendrilSession> {
+  }, dependencies: SessionCreateDependencies = {}): Promise<TendrilSession> {
     const policy = new NetworkPolicy({
       blockPrivateNetworks: options.createOptions.allowPrivateNetwork ? false : options.config.blockPrivateNetworks,
       allowedHosts: [...options.config.allowedHosts, ...(options.createOptions.allowedHosts ?? [])],
       blockedHosts: options.config.blockedHosts,
     });
-    const proxy = new EgressProxy(policy, options.logger);
-    await proxy.start();
+    const proxy = dependencies.proxy ?? new EgressProxy(policy, options.logger);
+    let chromiumProcess: ChromiumProcess | undefined;
     try {
-      const chromiumProcess = await launchChromium({
+      await proxy.start();
+      chromiumProcess = await (dependencies.launch ?? launchChromium)({
         executablePath: options.config.executablePath,
         userDataDir: options.userDataDir,
         proxyUrl: proxy.url(),
@@ -115,11 +129,34 @@ export class TendrilSession {
         options.logger.warn('Timezone can only be set before Chromium launch and is not currently applied', { timezoneId: options.createOptions.timezoneId });
       }
       return new TendrilSession(
-        options.id ?? newId('ses'), options.profile, options.userDataDir, proxy,
+        options.id ?? newId('ses'), options.profile, options.createOptions, options.userDataDir, proxy,
         policy, chromiumProcess, options.createOptions.headless ?? options.config.headless, options.config, options.logger,
       );
     } catch (error) {
-      await proxy.stop();
+      const cleanupFailures: unknown[] = [];
+      let browserTerminationVerified = !(error instanceof TendrilError
+        && error.details?.browserTerminationVerified === false);
+      if (chromiumProcess) {
+        try {
+          await chromiumProcess.close();
+        } catch (cleanupError) {
+          browserTerminationVerified = false;
+          cleanupFailures.push(cleanupError);
+        }
+      }
+      try {
+        await proxy.stop();
+      } catch (cleanupError) {
+        cleanupFailures.push(cleanupError);
+      }
+      if (cleanupFailures.length) {
+        throw new TendrilError('BROWSER_LAUNCH_FAILED', browserTerminationVerified
+          ? 'Browser session setup failed and resource cleanup was incomplete'
+          : 'Browser session setup failed and Chromium termination could not be verified', {
+          cause: new AggregateError([error, ...cleanupFailures], 'Browser session setup and cleanup failed'),
+          details: { browserTerminationVerified, resourceCleanupVerified: false },
+        });
+      }
       throw error;
     }
   }
@@ -277,7 +314,8 @@ export class TendrilSession {
     await page.close({ runBeforeUnload: false });
   }
 
-  async navigate(options: { pageId?: string; url?: string; action?: 'goto' | 'back' | 'forward' | 'reload'; waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit' }): Promise<{ url: string; title: string; status: number | null }> {
+  async navigate(options: { pageId?: string; url?: string; action?: 'goto' | 'back' | 'forward' | 'reload'; waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit'; signal?: AbortSignal }): Promise<{ url: string; title: string; status: number | null }> {
+    if (options.signal?.aborted) throw Object.assign(new Error('Navigation was cancelled'), { name: 'AbortError' });
     const page = this.currentPage(options.pageId);
     const action = options.action ?? 'goto';
     let response: Response | null = null;
@@ -289,7 +327,7 @@ export class TendrilSession {
       if (!['http:', 'https:'].includes(parsed.protocol)) {
         throw new TendrilError('NETWORK_BLOCKED', `Navigation protocol ${parsed.protocol} is not allowed`);
       }
-      await this.networkPolicy.resolve(parsed.toString());
+      await this.networkPolicy.resolve(parsed.toString(), options.signal);
       const gotoOptions = { waitUntil: options.waitUntil ?? 'domcontentloaded' } as const;
       try {
         response = await page.goto(options.url, gotoOptions);
@@ -316,13 +354,14 @@ export class TendrilSession {
     return { url: page.url(), title: await page.title() };
   }
 
-  async fetchText(url: string, pageId?: string): Promise<{ status: number | null; text: string }> {
+  async fetchText(url: string, pageId?: string, signal?: AbortSignal): Promise<{ status: number | null; text: string }> {
     this.currentPage(pageId);
     let target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
     const proxy = new URL(this.proxy.url());
     for (let redirects = 0; redirects <= 5; redirects += 1) {
-      await this.networkPolicy.resolve(target.toString());
+      if (signal?.aborted) throw Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' });
+      await this.networkPolicy.resolve(target.toString(), signal);
       const result = await new Promise<{ status: number; text: string; location?: string }>((resolve, reject) => {
         let settled = false;
         const request = http.request({
@@ -386,6 +425,9 @@ export class TendrilSession {
           settled = true;
           reject(error);
         });
+        const onAbort = (): void => { request.destroy(Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' })); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        request.once('close', () => signal?.removeEventListener('abort', onAbort));
         request.end();
       });
       if (result.location) {
@@ -857,11 +899,25 @@ export class TendrilSession {
   backendCdpHttpUrl(): string { return `http://127.0.0.1:${this.chromium.cdpPort}`; }
 
   async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+    if (this.closePromise) return this.closePromise;
     this.logger.info('Closing browser session', { sessionId: this.id, profile: this.profile });
-    await this.chromium.close();
-    await this.proxy.stop();
-    if (this.ephemeral) await rm(this.userDataDir, { recursive: true, force: true });
+    this.closePromise = (async () => {
+      const failures: unknown[] = [];
+      const attempt = async (operation: () => Promise<unknown>): Promise<void> => {
+        try { await operation(); } catch (error) { failures.push(error); }
+      };
+      await attempt(() => this.chromium.close());
+      await attempt(() => this.proxy.stop());
+      await attempt(async () => {
+        await withTimeout(Promise.allSettled(this.pendingDownloads.values()), 5_000, 'Pending download cleanup');
+      });
+      if (this.ephemeral) {
+        // The constructor proves userDataDir is a generated child of config.runtimeDir/sessions.
+        // lgtm[js/path-injection]
+        await attempt(() => rm(this.userDataDir, { recursive: true, force: true }));
+      }
+      if (failures.length) throw new AggregateError(failures, `Failed to completely close session ${this.id}`);
+    })();
+    return this.closePromise;
   }
 }
