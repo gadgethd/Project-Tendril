@@ -43,6 +43,19 @@ function errorHandler(logger: Logger) {
   };
 }
 
+async function withRequestSignal<T>(request: Request, response: Response, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort(new Error('HTTP client disconnected'));
+  const abortIfUnfinished = (): void => { if (!response.writableFinished) abort(); };
+  request.once('aborted', abort);
+  response.once('close', abortIfUnfinished);
+  try { return await operation(controller.signal); }
+  finally {
+    request.removeListener('aborted', abort);
+    response.removeListener('close', abortIfUnfinished);
+  }
+}
+
 export async function startHttpServer(services: { manager: BrowserManager; search: SearchService; crawl: CrawlService; logger: Logger }): Promise<TendrilHttpServer> {
   const { manager, search, crawl, logger } = services;
   const token = await loadOrCreateToken(manager);
@@ -150,8 +163,14 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       response.json(request.body.action === 'wait' ? await session.waitForChallenge(request.body) : await session.focusForHandoff(request.body.pageId));
     } catch (error) { next(error); }
   });
-  app.post('/v1/search', async (request, response, next) => { try { response.json(await search.search(request.body)); } catch (error) { next(error); } });
-  app.post('/v1/research', async (request, response, next) => { try { response.json(await search.research(request.body)); } catch (error) { next(error); } });
+  app.post('/v1/search', async (request, response, next) => {
+    try { response.json(await withRequestSignal(request, response, (signal) => search.search({ ...request.body, signal }))); }
+    catch (error) { next(error); }
+  });
+  app.post('/v1/research', async (request, response, next) => {
+    try { response.json(await withRequestSignal(request, response, (signal) => search.research({ ...request.body, signal }))); }
+    catch (error) { next(error); }
+  });
   app.post('/v1/crawl', (request, response, next) => { try { response.status(202).json(crawl.start(request.body)); } catch (error) { next(error); } });
   app.get('/v1/crawl/:id', (request, response, next) => { try { response.json(crawl.get(request.params.id!)); } catch (error) { next(error); } });
   app.delete('/v1/crawl/:id', (request, response, next) => { try { response.json(crawl.cancel(request.params.id!)); } catch (error) { next(error); } });
