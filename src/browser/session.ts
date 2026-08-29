@@ -11,7 +11,7 @@ import type {
   SessionInfo, SnapshotResult, TendrilConfig,
 } from '../types.js';
 import {
-  assertPathWithinOwnedRoot, assertPathWithinRoots, newId, pathWithinOwnedRoot, withTimeout, type Logger,
+  assertPathWithinOwnedRoot, assertPathWithinRoots, newId, pathWithinOwnedRoot, SENSITIVE_URL_KEY_PATTERN_SOURCE, withTimeout, type Logger,
 } from '../util.js';
 import { launchChromium, type ChromiumProcess } from './chromium.js';
 import { mergeInjectionWarnings, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
