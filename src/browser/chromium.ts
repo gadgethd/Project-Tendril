@@ -130,13 +130,44 @@ function defaultPosixGroupAlive(pid: number): boolean {
     process.kill(-pid, 0);
     return true;
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return false;
+    if (error instanceof Error && 'code' in error) {
+      if (error.code === 'ESRCH') return false;
+      if (error.code === 'EPERM') {
+        // macOS can reject a stale/reused process-group id with EPERM (the
+        // group is not ours or its leader is gone). Probe the leader directly:
+        // an unreachable group cannot keep our work alive, so treat it as dead
+        // rather than failing session cleanup.
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (leaderError) {
+          return false;
+        }
+      }
+    }
     throw error;
   }
 }
 
 function defaultSignalPosixGroup(pid: number, signal: NodeJS.Signals): void {
-  process.kill(-pid, signal);
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error)) throw error;
+    if (error.code === 'ESRCH') return;
+    if (error.code === 'EPERM') {
+      // Group signalling is not permitted (macOS stale group / foreign group).
+      // Fall back to the leader so best-effort cleanup still runs; if the
+      // leader is also unreachable the group is functionally gone.
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // Ignore: the process group is already unreachable.
+      }
+      return;
+    }
+    throw error;
+  }
 }
 
 export function trackPosixProcessGroup(
