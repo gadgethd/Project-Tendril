@@ -12,6 +12,7 @@ import { validateProfileName } from './browser/profile-name.js';
 import { runStdioMcp } from './server/mcp.js';
 import { advertisedHost, formatUrlAuthority, startHttpServer } from './server/http.js';
 import { pathWithinOwnedRoot } from './util.js';
+import { VERSION } from './version.js';
 const program = new Command();
 
 program

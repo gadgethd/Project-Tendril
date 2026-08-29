@@ -204,7 +204,7 @@ describe('HTTP and CDP interfaces', () => {
       host: '0.0.0.0', port: 0, token,
       dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), logLevel: 'error',
     } });
-    const session = { id: 'ses_advertised', chromium: { browserPath: '/devtools/browser/id' } } as never;
+    const session = { id: 'ses_advertised', chromium: { browserPath: '/devtools/browser/id' } } as unknown as { id: string };
     const manager = {
       config,
       activeCount: () => 1,

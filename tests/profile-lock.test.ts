@@ -31,10 +31,10 @@ describe('profile filesystem locks', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-lock-read-'));
     let failRead = false;
     const unreadable = await acquireProfileFileLock(root, 'unreadable', {
-      readFile: async (...args: Parameters<typeof readFile>) => {
+      readFile: (async (...args: Parameters<typeof readFile>) => {
         if (failRead && String(args[0]).endsWith('unreadable.lock')) throw fsError('EIO', 'injected read failure');
         return readFile(...args);
-      },
+      }) as unknown as typeof readFile,
     });
     failRead = true;
     await expect(unreadable.release()).rejects.toThrow('unreadable or corrupt');

@@ -16,11 +16,11 @@ interface FactoryOptions {
   createOptions: SessionCreateOptions;
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
+function deferred<T = undefined>() {
+  let resolve!: (value: T | void) => void;
   let reject!: (reason?: unknown) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
+    resolve = resolvePromise as (value: T | void) => void;
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
@@ -205,8 +205,8 @@ describe('BrowserManager lifecycle', () => {
 
   it('makes close and shutdown joinable while creation is in flight', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-close-'));
-    const launch = deferred<void>();
-    const cleanup = deferred<void>();
+    const launch = deferred<undefined>();
+    const cleanup = deferred<undefined>();
     const close = vi.fn(() => cleanup.promise);
     const factory = vi.fn(async (options: FactoryOptions) => {
       await launch.promise;
@@ -227,7 +227,7 @@ describe('BrowserManager lifecycle', () => {
 
   it('coalesces concurrent close calls into one cleanup', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-join-'));
-    const cleanup = deferred<void>();
+    const cleanup = deferred<undefined>();
     const close = vi.fn(() => cleanup.promise);
     const manager = await managerFor(root, 1, async (options) => fakeSession(options, close));
     const session = await manager.create();
@@ -242,7 +242,7 @@ describe('BrowserManager lifecycle', () => {
 
   it('counts a closing session against capacity until cleanup settles', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-manager-closing-capacity-'));
-    const cleanup = deferred<void>();
+    const cleanup = deferred<undefined>();
     const close = vi.fn(() => cleanup.promise);
     const manager = await managerFor(root, 1, async (options) => fakeSession(options, close));
     const session = await manager.create();
