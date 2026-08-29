@@ -1,18 +1,14 @@
 #!/usr/bin/env node
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { readdir, rm } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { loadConfig } from './config.js';
-import { findChromium } from './browser/chromium.js';
+import { runDoctor } from './doctor.js';
 import { createRuntime } from './runtime.js';
 import { runStdioMcp } from './server/mcp.js';
 import { startHttpServer } from './server/http.js';
-import { ensureDir } from './util.js';
-
-const execFileAsync = promisify(execFile);
 const program = new Command();
 
 program
@@ -61,18 +57,7 @@ program.command('doctor')
   .action(async () => {
     const root = program.opts<{ config?: string }>();
     const config = await loadConfig({ configPath: root.config });
-    const checks: Array<{ check: string; ok: boolean; detail: string }> = [];
-    checks.push({ check: 'Node.js', ok: Number(process.versions.node.split('.')[0]) >= 22, detail: process.version });
-    try {
-      const executable = await findChromium(config.executablePath);
-      const { stdout, stderr } = await execFileAsync(executable, ['--version'], { timeout: 10_000 });
-      checks.push({ check: 'Chromium', ok: true, detail: `${executable} (${(stdout || stderr).trim()})` });
-    } catch (error) {
-      checks.push({ check: 'Chromium', ok: false, detail: error instanceof Error ? error.message : String(error) });
-    }
-    try { await ensureDir(config.dataDir); await ensureDir(config.runtimeDir); checks.push({ check: 'Directories', ok: true, detail: `${config.dataDir}, ${config.runtimeDir}` }); }
-    catch (error) { checks.push({ check: 'Directories', ok: false, detail: String(error) }); }
-    checks.push({ check: 'Non-root sandbox', ok: process.getuid?.() !== 0, detail: process.getuid?.() === 0 ? 'Running as root is refused by default' : 'Process is non-root' });
+    const checks = await runDoctor(config);
     for (const check of checks) process.stdout.write(`${check.ok ? 'PASS' : 'FAIL'}  ${check.check}: ${check.detail}\n`);
     if (checks.some((check) => !check.ok)) process.exitCode = 1;
   });
