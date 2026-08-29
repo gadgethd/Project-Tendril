@@ -106,18 +106,35 @@ export interface SnapshotResult {
 
 export interface SearchResult {
   rank: number;
+  score?: number;
+  providerScore?: number;
   title: string;
   url: string;
   snippet: string;
   provider: SearchProviderName;
+  providers?: SearchProviderName[];
+  providerRanks?: Partial<Record<SearchProviderName, number>>;
+  engines?: string[];
+  publishedAt?: string;
+  queries?: string[];
 }
 
 export interface EvidenceChunk {
+  citationId: string;
   sourceUrl: string;
+  canonicalUrl: string;
+  finalUrl: string;
   title: string;
   text: string;
   heading?: string;
   query: string;
+  provider: SearchProviderName;
+  rank: number;
+  status: number | null;
+  mimeType: string;
+  retrievedAt: string;
+  contentHash: string;
+  truncated?: boolean;
 }
 
 export interface CrawlResult {
@@ -222,6 +239,8 @@ export interface SearchProviderHealth {
   lastFailure?: string;
   averageLatencyMs?: number;
   errorCount: number;
+  consecutiveFailures?: number;
+  circuitOpenUntil?: string;
 }
 
 export interface ActivityEntry {

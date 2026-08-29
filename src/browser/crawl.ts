@@ -314,7 +314,7 @@ export class CrawlService {
       pending = (async () => {
         const robotsUrl = new URL('/robots.txt', url.origin).toString();
         try {
-          const { text } = await this.awaitJob(job, session.fetchText(robotsUrl, undefined, job.controller.signal));
+          const { text } = await this.awaitJob(job, session.fetchText(robotsUrl, undefined, { signal: job.controller.signal }));
           return parseRobots(robotsUrl, text);
         } catch (error) {
           if (job.controller.signal.aborted) throw error;
