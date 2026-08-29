@@ -187,9 +187,9 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
       return result({ success: true });
     }
     if (input.action === 'close') { await manager.close(input.sessionId); return result({ success: true }); }
-    const profile = session.profile;
+    const createOptions = session.createOptions;
     await manager.close(input.sessionId);
-    return result(await (await manager.create(profile ? { profile } : {})).info());
+    return result(await (await manager.create(createOptions)).info());
   }));
 
   server.registerTool('browser_page', {
@@ -366,6 +366,7 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
       followUpQueries: z.array(z.string().min(1)).min(1).max(10).optional(),
       maxPages: z.number().int().min(1).max(100).default(20), maxDepth: z.number().int().min(0).max(5).default(2),
       sameOrigin: z.boolean().default(true), respectRobots: z.boolean().default(true),
+      offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(20),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   }, wrap(async (input) => {
@@ -385,6 +386,7 @@ export function createMcpServer(services: { manager: BrowserManager; search: Sea
       }));
       return result({ jobs });
     }
+    if (input.action === 'results') return result(crawl.results(input.jobId, { offset: input.offset, limit: input.limit }));
     return result(input.action === 'cancel' ? crawl.cancel(input.jobId) : crawl.get(input.jobId));
   }));
 

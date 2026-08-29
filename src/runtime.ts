@@ -18,5 +18,23 @@ export async function createRuntime(config: TendrilConfig): Promise<TendrilRunti
   await manager.start();
   const search = new SearchService(manager, logger);
   const crawl = new CrawlService(manager, logger);
-  return { manager, search, crawl, logger, close: () => manager.closeAll() };
+  let closePromise: Promise<void> | undefined;
+  return {
+    manager,
+    search,
+    crawl,
+    logger,
+    close() {
+      if (!closePromise) {
+        closePromise = (async () => {
+          try {
+            await crawl.close();
+          } finally {
+            await manager.closeAll();
+          }
+        })();
+      }
+      return closePromise;
+    },
+  };
 }

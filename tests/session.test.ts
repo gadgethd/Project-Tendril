@@ -10,6 +10,21 @@ let runtime: TendrilRuntime | undefined;
 afterEach(async () => { await runtime?.close(); runtime = undefined; });
 
 describe('TendrilSession', () => {
+  it('flushes a named-profile cookie before close and restores it after reopening', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-reopen-'));
+    runtime = await createRuntime(await loadConfig({ overrides: {
+      dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error',
+    } }));
+    const first = await runtime.manager.create({ profile: 'cookie-reopen' });
+    await first.importCookies([{ name: 'persisted', value: 'yes', url: 'https://example.test/' }]);
+    await runtime.manager.close(first.id);
+
+    const reopened = await runtime.manager.create({ profile: 'cookie-reopen' });
+    expect(await reopened.exportCookies()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'persisted', value: 'yes', domain: 'example.test' }),
+    ]));
+  });
+
   it('drives a semantic snapshot and element refs in real Chromium', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-test-'));
     const config = await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } });
