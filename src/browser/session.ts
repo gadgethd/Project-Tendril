@@ -91,6 +91,8 @@ function boundedTimeout(configuredMs: number, deadlineMs?: number): number {
   const remaining = deadlineMs - Date.now();
   if (remaining <= 0) throw new TendrilError('TIMEOUT', 'Operation deadline exceeded', { retryable: true });
   return Math.max(1, Math.min(configuredMs, remaining));
+}
+
 const MAX_STORED_SNAPSHOTS = 20;
 const MAX_STORED_SNAPSHOT_CHARS = 1_000_000;
 const MAX_TOTAL_STORED_SNAPSHOT_CHARS = 5_000_000;

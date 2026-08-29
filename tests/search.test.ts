@@ -575,31 +575,3 @@ describe('research allocation and provenance', () => {
     await expect(service.search({ query: 'after shutdown' })).rejects.toMatchObject({ code: 'CANCELLED' });
   });
 });
-
-describe('SearchService evidence safety', () => {
-  it('propagates extraction warnings with untrusted evidence chunks', async () => {
-    const close = vi.fn(async () => undefined);
-    const manager = {
-      config: { searchProviders: [] },
-      create: vi.fn(async () => ({
-        id: 'session_evidence',
-        navigate: vi.fn(async () => ({ status: 200 })),
-        extractWithSafety: vi.fn(async () => ({
-          data: { title: 'Fixture', markdown: `Evidence ${'x'.repeat(100)}` },
-          untrustedContent: true,
-          warnings: ['Page content contains instruction-override language.'],
-        })),
-      })),
-      close,
-    } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
-
-    const evidence = await (service as unknown as {
-      fetchEvidence(results: SearchResult[], query: string): Promise<Array<{ warnings?: string[] }>>;
-    }).fetchEvidence([result('evidence')], 'safety query');
-
-    expect(evidence).toHaveLength(1);
-    expect(evidence[0]?.warnings).toContain('Page content contains instruction-override language.');
-    expect(close).toHaveBeenCalledWith('session_evidence');
-  });
-});

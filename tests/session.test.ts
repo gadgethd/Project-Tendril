@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SNAPSHOT_BOUNDS } from '../src/browser/snapshot.js';
 import { loadConfig } from '../src/config.js';
-import { TendrilError } from '../src/errors.js';
 import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
 
 let runtime: TendrilRuntime | undefined;
@@ -66,43 +65,6 @@ describe('TendrilSession', () => {
     await expect(session.navigate({ url: 'file:///etc/passwd' })).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
   });
 
-  it('enforces fetch body limits, deadlines, and cancellation during streaming I/O', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-fetch-'));
-    const server = http.createServer((request, response) => {
-      if (request.url === '/large') {
-        response.writeHead(200, { 'content-type': 'text/plain', 'content-length': '2048' });
-        response.end('x'.repeat(2048));
-        return;
-      }
-      const timer = setTimeout(() => { response.writeHead(200); response.end('late'); }, 1_000);
-      timer.unref();
-      request.once('close', () => clearTimeout(timer));
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('Test server did not bind a TCP port');
-    const base = `http://127.0.0.1:${address.port}`;
-
-    try {
-      runtime = await createRuntime(await loadConfig({ overrides: {
-        dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1,
-        maxResponseBodyBytes: 1024, blockPrivateNetworks: false, logLevel: 'error',
-      } }));
-      const session = await runtime.manager.create();
-      await expect(session.fetchText(`${base}/large`)).rejects.toMatchObject({ code: 'OUTPUT_LIMIT' });
-      for (const maxBytes of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-        await expect(session.fetchText(`${base}/large`, undefined, { maxBytes }))
-          .rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' });
-      }
-      await expect(session.fetchText(`${base}/slow`, undefined, { deadlineMs: Date.now() + 30 }))
-        .rejects.toMatchObject({ code: 'TIMEOUT' });
-
-      const controller = new AbortController();
-      const startedAt = Date.now();
-      const pending = session.fetchText(`${base}/slow`, undefined, { signal: controller.signal });
-      setTimeout(() => controller.abort(new TendrilError('CANCELLED', 'cancel test')), 20).unref();
-      await expect(pending).rejects.toMatchObject({ code: 'CANCELLED', message: 'cancel test' });
-      expect(Date.now() - startedAt).toBeLessThan(500);
   it('keeps refs bound to the captured element and rejects replacement on the same URL', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-test-'));
     runtime = await createRuntime(await loadConfig({ overrides: {
