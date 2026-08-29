@@ -12,8 +12,6 @@ export interface TendrilConfig {
   sessionIdleMs: number;
   actionTimeoutMs: number;
   navigationTimeoutMs: number;
-  challengeMaxRetries?: number;   // default 3
-  challengeRetryDelayMs?: number; // default 2000
   maxSnapshotChars: number;
   maxResponseBodyBytes: number;
   blockPrivateNetworks: boolean;

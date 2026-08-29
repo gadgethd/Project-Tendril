@@ -6,10 +6,12 @@
   "sessionIdleMs": 600000,
   "actionTimeoutMs": 30000,
   "navigationTimeoutMs": 60000,
+  "maxSnapshotChars": 20000,
+  "maxResponseBodyBytes": 2097152,
   "blockPrivateNetworks": true,
-  "allowedHosts": [],
+  "allowedHosts": ["localhost"],
   "blockedHosts": [],
-  "workspaceRoots": [],
-  "searchProviders": ["bing", "duckduckgo", "google"],
+  "workspaceRoots": ["."],
+  "searchProviders": ["searxng", "duckduckgo", "bing"],
   "searxngUrl": "http://localhost:8080"
 }

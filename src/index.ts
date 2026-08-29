@@ -8,4 +8,6 @@ export { createRuntime } from './runtime.js';
 export { createMcpServer, runStdioMcp } from './server/mcp.js';
 export { startHttpServer } from './server/http.js';
 export { TendrilError } from './errors.js';
+export { runDoctor } from './doctor.js';
+export type { DoctorCheck } from './doctor.js';
 export type * from './types.js';
