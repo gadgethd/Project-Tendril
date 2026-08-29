@@ -11,6 +11,7 @@ import { createRuntime } from './runtime.js';
 import { runStdioMcp } from './server/mcp.js';
 import { startHttpServer } from './server/http.js';
 import { ensureDir } from './util.js';
+import { VERSION } from './version.js';
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -18,7 +19,7 @@ const program = new Command();
 program
   .name('tendril')
   .description('Local agent-first Chromium browser with MCP, REST, and CDP')
-  .version('1.1.0')
+  .version(VERSION)
   .option('-c, --config <path>', 'configuration JSON path');
 
 program.command('serve')
@@ -37,7 +38,7 @@ program.command('serve')
     } });
     const runtime = await createRuntime(config);
     const httpServer = await startHttpServer({ ...runtime });
-    process.stdout.write(`Project Tendril 1.1.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${config.host}:${httpServer.port}/mcp\n`);
+    process.stdout.write(`Project Tendril ${VERSION}\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${config.host}:${httpServer.port}/mcp\n`);
     await waitForShutdown(async () => { await httpServer.close(); await runtime.close(); });
   });
 

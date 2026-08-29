@@ -11,6 +11,7 @@ import { asTendrilError } from '../errors.js';
 import { ensureDir, randomToken, type Logger } from '../util.js';
 import { createMcpServer } from './mcp.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { VERSION } from '../version.js';
 
 export interface TendrilHttpServer {
   server: http.Server;
@@ -74,7 +75,7 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
 
   app.get('/', (_request, response) => response.redirect('/dashboard'));
   app.get('/dashboard', (_request, response) => response.type('html').send(DASHBOARD_HTML));
-  app.get('/health', (_request, response) => response.json({ status: 'ok', version: '1.1.0', chromiumSessions: manager.config.maxSessions }));
+  app.get('/health', (_request, response) => response.json({ status: 'ok', version: VERSION, chromiumSessions: manager.config.maxSessions }));
   app.get('/openapi.json', (_request, response) => response.json(openApiDocument(manager.config.port)));
   app.get('/metrics', authenticated, async (_request, response) => {
     const sessions = await manager.list();
@@ -234,7 +235,7 @@ function publicCdpUrl(manager: BrowserManager, sessionId: string, browserPath: s
 
 function openApiDocument(port: number): Record<string, unknown> {
   return {
-    openapi: '3.1.0', info: { title: 'Project Tendril API', version: '1.1.0' },
+    openapi: '3.1.0', info: { title: 'Project Tendril API', version: VERSION },
     servers: [{ url: `http://127.0.0.1:${port}` }],
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } }, security: [{ bearerAuth: [] }],
     paths: {

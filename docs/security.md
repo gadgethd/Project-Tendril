@@ -30,12 +30,7 @@ Tendril has no telemetry. Structured logs redact credentials embedded in URLs an
 
 ## Challenge handling
 
-Tendril detects common challenge pages (Cloudflare, Turnstile, reCAPTCHA, hCaptcha, and others) and supports two resolution paths:
-
-- **Human-in-the-loop** (default): pause for a human to complete the challenge in a headed session. Legitimately issued clearance cookies remain in that session or named profile for their normal server-defined lifetime.
-- **Automated resolution** (opt-in): when `challengeAutoSolve` / `TENDRIL_CHALLENGE_AUTO_SOLVE` is enabled, Tendril attempts local heuristic resolution for supported challenge types. This does not contact external solving services, synthesize challenge tokens, or apply stealth patches.
-
-Both paths process everything locally. Tendril does not outsource solving, copy clearance between devices, or apply stealth patches.
+Tendril detects common challenge pages (Cloudflare, Turnstile, reCAPTCHA, hCaptcha, and others) and pauses for a human to complete the challenge in a headed session. Legitimately issued clearance cookies remain in that session or named profile for their normal server-defined lifetime. Tendril does not automate challenge solving, outsource solving, synthesize challenge tokens, copy clearance between devices, or apply stealth patches.
 
 ## Out of scope
 

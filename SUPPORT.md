@@ -24,4 +24,4 @@ Do not use issues or discussions for vulnerabilities. Follow [SECURITY.md](SECUR
 
 ## Scope
 
-Project Tendril 1.0 is supported primarily on Linux with Node.js 22.19 or newer and a sandbox-capable Chromium installation. Windows and macOS support is best-effort until broader native validation is complete.
+Project Tendril supports Node.js 22.19 and the Node.js 24 release line with a sandbox-capable Chromium installation. Linux, Windows, and macOS are exercised in CI; the hardened container is the recommended boundary for adversarial browsing.
