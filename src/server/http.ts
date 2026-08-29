@@ -244,8 +244,14 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       response.json(request.body.action === 'wait' ? await session.waitForChallenge(request.body) : await session.focusForHandoff(request.body.pageId));
     } catch (error) { next(error); }
   });
-  app.post('/v1/search', async (request, response, next) => { try { response.json(await search.search(request.body)); } catch (error) { next(error); } });
-  app.post('/v1/research', async (request, response, next) => { try { response.json(await search.research(request.body)); } catch (error) { next(error); } });
+  app.post('/v1/search', async (request, response, next) => {
+    try { response.json(await withRequestSignal(request, response, (signal) => search.search({ ...request.body, signal }))); }
+    catch (error) { next(error); }
+  });
+  app.post('/v1/research', async (request, response, next) => {
+    try { response.json(await withRequestSignal(request, response, (signal) => search.research({ ...request.body, signal }))); }
+    catch (error) { next(error); }
+  });
   app.post('/v1/crawl', (request, response, next) => { try { response.status(202).json(crawl.start(request.body)); } catch (error) { next(error); } });
   app.get('/v1/crawl/:id', (request, response, next) => { try { response.json(crawl.get(request.params.id!)); } catch (error) { next(error); } });
   app.get('/v1/crawl/:id/results', (request, response, next) => {

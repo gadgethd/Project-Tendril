@@ -47,7 +47,8 @@ export const DEFAULT_CONFIG: TendrilConfig = {
   allowedHosts: [],
   blockedHosts: [],
   workspaceRoots: [process.cwd()],
-  searchProviders: ['bing', 'duckduckgo', 'google'],
+  // SearXNG is preferred when configured and is skipped without an endpoint.
+  searchProviders: ['searxng', 'duckduckgo', 'bing', 'google'],
   dataDir: defaultDataDirectory(),
   runtimeDir: defaultRuntimeDirectory(),
   logLevel: 'info',

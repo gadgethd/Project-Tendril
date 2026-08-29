@@ -39,6 +39,22 @@ interface DialogEntry {
 
 type AddCookie = Parameters<BrowserContext['addCookies']>[0][number];
 
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new TendrilError('CANCELLED', 'Operation cancelled', { retryable: true });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function boundedTimeout(configuredMs: number, deadlineMs?: number): number {
+  if (deadlineMs === undefined) return configuredMs;
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) throw new TendrilError('TIMEOUT', 'Operation deadline exceeded', { retryable: true });
+  return Math.max(1, Math.min(configuredMs, remaining));
+}
+
 export type BrowserAction =
   | 'click' | 'double_click' | 'hover' | 'focus' | 'fill' | 'type' | 'select'
   | 'check' | 'uncheck' | 'press' | 'scroll' | 'drag' | 'upload';
@@ -341,7 +357,11 @@ export class TendrilSession {
     else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded' });
     this.refs.clear();
-    const result = { url: page.url(), title: await page.title(), status: response?.status() ?? null };
+    const contentType = response?.headers()['content-type']?.split(';', 1)[0]?.trim();
+    const result: { url: string; title: string; status: number | null; mimeType?: string } = {
+      url: page.url(), title: await page.title(), status: response?.status() ?? null,
+    };
+    if (contentType) result.mimeType = contentType;
     const detail = action === 'goto' ? `goto ${options.url}` : action;
     this.recordActivity('navigate', detail, result.url);
     return result;
@@ -356,9 +376,15 @@ export class TendrilSession {
 
   async fetchText(url: string, pageId?: string, signal?: AbortSignal): Promise<{ status: number | null; text: string }> {
     this.currentPage(pageId);
+    throwIfAborted(options.signal);
     let target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
     const proxy = new URL(this.proxy.url());
+    const requestedMaxBytes = options.maxBytes ?? this.config.maxResponseBodyBytes;
+    if (!Number.isFinite(requestedMaxBytes) || requestedMaxBytes <= 0) {
+      throw new TendrilError('CONFIGURATION_ERROR', 'fetchText maxBytes must be a positive finite number');
+    }
+    const maxBytes = Math.max(1, Math.floor(Math.min(requestedMaxBytes, this.config.maxResponseBodyBytes)));
     for (let redirects = 0; redirects <= 5; redirects += 1) {
       if (signal?.aborted) throw Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' });
       await this.networkPolicy.resolve(target.toString(), signal);
@@ -370,7 +396,7 @@ export class TendrilSession {
           method: 'GET',
           path: target.toString(),
           headers: {
-            accept: 'text/plain,*/*;q=0.1',
+            accept: options.accept ?? 'text/plain,*/*;q=0.1',
             'accept-encoding': 'identity',
             connection: 'close',
             host: target.host,
@@ -379,15 +405,17 @@ export class TendrilSession {
         }, (response) => {
           const status = response.statusCode ?? 0;
           const location = response.headers.location;
+          const headers = Object.fromEntries(Object.entries(response.headers)
+            .flatMap(([key, value]) => value === undefined ? [] : [[key, Array.isArray(value) ? value.join(', ') : String(value)]]));
           if (location && [301, 302, 303, 307, 308].includes(status)) {
             settled = true;
             response.resume();
-            resolve({ status, text: '', location });
+            resolve({ status, text: '', headers, location });
             return;
           }
           const rawLength = response.headers['content-length'];
           const contentLength = Number(Array.isArray(rawLength) ? rawLength[0] : rawLength);
-          if (Number.isFinite(contentLength) && contentLength > this.config.maxResponseBodyBytes) {
+          if (Number.isFinite(contentLength) && contentLength > maxBytes) {
             settled = true;
             response.destroy();
             reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
@@ -398,7 +426,7 @@ export class TendrilSession {
           response.on('data', (chunk: Buffer) => {
             if (settled) return;
             bytes += chunk.byteLength;
-            if (bytes > this.config.maxResponseBodyBytes) {
+            if (bytes > maxBytes) {
               settled = true;
               response.destroy();
               reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
@@ -409,7 +437,7 @@ export class TendrilSession {
           response.once('end', () => {
             if (settled) return;
             settled = true;
-            resolve({ status, text: Buffer.concat(chunks).toString('utf8') });
+            resolve({ status, text: Buffer.concat(chunks).toString('utf8'), headers });
           });
           response.once('error', (error) => {
             if (settled) return;
@@ -417,12 +445,15 @@ export class TendrilSession {
             reject(error);
           });
         });
-        request.setTimeout(this.config.navigationTimeoutMs, () => {
+        const onAbort = (): void => { request.destroy(abortError(options.signal!)); };
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        request.setTimeout(timeoutMs, () => {
           request.destroy(new TendrilError('TIMEOUT', `Timed out fetching ${target.toString()}`, { retryable: true }));
         });
         request.once('error', (error) => {
           if (settled) return;
           settled = true;
+          options.signal?.removeEventListener('abort', onAbort);
           reject(error);
         });
         const onAbort = (): void => { request.destroy(Object.assign(new Error('Fetch was cancelled'), { name: 'AbortError' })); };
@@ -436,7 +467,7 @@ export class TendrilSession {
         continue;
       }
       this.refs.clear();
-      return { status: result.status, text: result.text };
+      return { status: result.status, text: result.text, headers: result.headers };
     }
     throw new TendrilError('TIMEOUT', `Too many redirects fetching ${url}`, { retryable: true });
   }

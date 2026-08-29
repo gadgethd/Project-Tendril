@@ -7,6 +7,7 @@ export type TendrilErrorCode =
   | 'STALE_ELEMENT_REF'
   | 'NETWORK_BLOCKED'
   | 'INVALID_URL'
+  | 'CANCELLED'
   | 'TIMEOUT'
   | 'CANCELLED'
   | 'OUTPUT_LIMIT'
@@ -38,6 +39,9 @@ export function asTendrilError(error: unknown): TendrilError {
   if (error instanceof TendrilError) return error;
   if (error instanceof Error && error.name === 'TimeoutError') {
     return new TendrilError('TIMEOUT', error.message, { cause: error, retryable: true });
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return new TendrilError('CANCELLED', error.message || 'Operation cancelled', { cause: error, retryable: true });
   }
   const message = error instanceof Error ? error.message : String(error);
   return new TendrilError('UNSUPPORTED_OPERATION', message, { cause: error });

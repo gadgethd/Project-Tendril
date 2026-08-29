@@ -335,15 +335,18 @@ The authenticated service exposes a compact OpenAPI document at `http://127.0.0.
 
 ## Search, research, and crawling
 
-`browser_search` renders provider result pages in Chromium and returns normalized titles, URLs, snippets, ranks, and provider names. The default order is:
+`browser_search` queries configured providers through bounded HTTP adapters, rejects results that do not cover the query, and deterministically fuses provider rank with relevance. It returns normalized titles, URLs, snippets, ranks, scores, provider provenance, and typed partial failures. The default preference order is:
 
-1. Bing
+1. SearXNG, when an endpoint is configured
 2. DuckDuckGo
-3. Google
+3. Bing
+4. Google, when Custom Search credentials are configured
 
-Configure a self-hosted SearXNG instance by setting `searxngUrl` and adding `searxng` to `searchProviders`.
+Configure a self-hosted SearXNG instance by setting `searxngUrl`. Its JSON API is used directly, retaining native scores, engines, publication dates, and unresponsive-engine metadata. Unconfigured providers are skipped without opening a browser session.
 
-`browser_research` accepts up to ten queries, deduplicates result URLs, visits a bounded number of sources, and returns evidence chunks with their source URL, title, heading, and originating query. It does not generate a summary; the calling agent remains responsible for analysis and citation.
+An opt-in live quality smoke is available with `TENDRIL_LIVE_SEARXNG_URL=https://your-instance.example TENDRIL_ALLOW_NO_SANDBOX=true npx vitest run tests/search-live.test.ts`; normal tests never contact a live provider.
+
+`browser_research` accepts up to ten queries, balances sources across queries and domains, visits sources concurrently within session and output budgets, and returns stable citation IDs with originating query, canonical and final URLs, status, MIME type, retrieval time, and content hash. It does not generate a summary; the calling agent remains responsible for analysis and citation.
 
 `browser_crawl` creates an asynchronous job with:
 
