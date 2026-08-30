@@ -2,9 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
+import { isOfficialMcpUrl } from '../src/browser/search.js';
 import { loadConfig } from '../src/config.js';
 import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
-import { isOfficialMcpUrl } from '../src/browser/search.js';
 
 const endpoint = process.env.TENDRIL_LIVE_SEARXNG_URL;
 

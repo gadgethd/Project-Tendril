@@ -1,7 +1,7 @@
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
-import TurndownService from 'turndown';
 import type { Page } from 'playwright';
+import TurndownService from 'turndown';
 import type { StructuredData } from '../types.js';
 import { redactUrl, SENSITIVE_URL_KEY_PATTERN_SOURCE } from '../util.js';
 import { detectInjectionWarnings, REDACTED_VALUE, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';

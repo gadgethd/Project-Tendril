@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { BrowserManager } from '../src/browser/manager.js';
 import {
   allocateResearchSources,
   fuseResults,
   isOfficialMcpUrl,
+  type ParsedSearchResult,
   parseSearxngResponse,
   rankResults,
   SearchCache,
-  SearchService,
-  type ParsedSearchResult,
   type SearchResponse,
+  SearchService,
 } from '../src/browser/search.js';
 import { TendrilError } from '../src/errors.js';
-import type { BrowserManager } from '../src/browser/manager.js';
 import type { SearchProviderName, SearchResult } from '../src/types.js';
 import { Logger } from '../src/util.js';
 

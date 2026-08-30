@@ -1,7 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { TendrilError } from '../errors.js';
 import type { EvidenceChunk, SearchProviderHealth, SearchProviderName, SearchRateLimit, SearchResult } from '../types.js';
-import { hashText, newId, type Logger } from '../util.js';
+import { hashText, type Logger, newId } from '../util.js';
 import type { BrowserManager } from './manager.js';
 import type { TendrilSession } from './session.js';
 

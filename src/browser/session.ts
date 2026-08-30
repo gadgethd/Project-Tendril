@@ -27,13 +27,13 @@ import type {
 import {
   assertPathWithinOwnedRoot,
   assertPathWithinRoots,
+  type Logger,
   newId,
   pathWithinOwnedRoot,
   SENSITIVE_URL_KEY_PATTERN_SOURCE,
   withTimeout,
-  type Logger,
 } from '../util.js';
-import { launchChromium, type ChromiumProcess } from './chromium.js';
+import { type ChromiumProcess, launchChromium } from './chromium.js';
 import { mergeInjectionWarnings, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
 import { extractForms, extractPage, extractTables } from './extract.js';
 import {
@@ -43,8 +43,8 @@ import {
   boundedSnapshotWarnings,
   createSnapshot,
   ELEMENT_FINGERPRINT_OPTIONS,
-  SNAPSHOT_BOUNDS,
   type ElementTarget,
+  SNAPSHOT_BOUNDS,
 } from './snapshot.js';
 
 interface SessionCreateDependencies {
@@ -1800,7 +1800,10 @@ export class TendrilSession {
     } else if (urlDomainMatches(lowerUrl, 'duckduckgo.com') && /bots use duckduckgo|select all squares/.test(lowerText)) {
       provider = 'duckduckgo';
       kind = 'captcha';
-    } else if ((urlDomainMatches(lowerUrl, 'google.com') && urlPathStartsWith(lowerUrl, '/sorry')) || /unusual traffic from your computer network/.test(lowerText)) {
+    } else if (
+      (urlDomainMatches(lowerUrl, 'google.com') && urlPathStartsWith(lowerUrl, '/sorry')) ||
+      /unusual traffic from your computer network/.test(lowerText)
+    ) {
       provider = 'google';
       kind = urlPathStartsWith(lowerUrl, '/sorry') ? 'captcha' : 'rate-limit';
     } else if (/captcha|verify you are human|security check/.test(`${lowerTitle} ${lowerText.slice(0, 3000)}`)) {

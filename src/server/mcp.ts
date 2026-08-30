@@ -2,13 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { BrowserContext } from 'playwright';
 import { z } from 'zod/v4';
-import { asTendrilError } from '../errors.js';
-import type { BrowserManager } from '../browser/manager.js';
-import type { SearchService } from '../browser/search.js';
+import { mergeInjectionWarnings } from '../browser/content-safety.js';
 import type { CrawlService } from '../browser/crawl.js';
 import { extractStructured } from '../browser/extract.js';
-import { mergeInjectionWarnings } from '../browser/content-safety.js';
+import type { BrowserManager } from '../browser/manager.js';
+import type { SearchService } from '../browser/search.js';
 import type { TendrilSession } from '../browser/session.js';
+import { asTendrilError } from '../errors.js';
 import type { InterceptionRule } from '../types.js';
 
 type Structured = Record<string, unknown>;

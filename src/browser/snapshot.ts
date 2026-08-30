@@ -1,7 +1,7 @@
 import type { ElementHandle, Frame, JSHandle, Page } from 'playwright';
 import { TendrilError } from '../errors.js';
-import { newId, redactUrl } from '../util.js';
 import type { ElementRef, SnapshotDiffSummary, SnapshotNode, SnapshotResult } from '../types.js';
+import { newId, redactUrl } from '../util.js';
 import { detectInjectionWarnings, REDACTED_VALUE, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
 
 export interface ElementTarget {

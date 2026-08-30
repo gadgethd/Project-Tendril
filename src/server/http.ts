@@ -1,18 +1,18 @@
 import http from 'node:http';
 import { isIP, type Socket } from 'node:net';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import httpProxy from 'http-proxy';
 import ipaddr from 'ipaddr.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { CrawlService } from '../browser/crawl.js';
 import type { BrowserManager, SessionLease } from '../browser/manager.js';
 import type { SearchService } from '../browser/search.js';
-import type { CrawlService } from '../browser/crawl.js';
 import { asTendrilError } from '../errors.js';
-import { BoundedRateLimiter, type RateLimitDecision } from '../security/rate-limit.js';
-import { type Logger } from '../util.js';
 import { constantTimeTokenEqual, createCdpCapability, loadOrCreateHttpToken, parseBearerAuthorization, verifyCdpCapability } from '../security/auth.js';
-import { createMcpServer } from './mcp.js';
+import { BoundedRateLimiter, type RateLimitDecision } from '../security/rate-limit.js';
+import type { Logger } from '../util.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { createMcpServer } from './mcp.js';
 
 export interface TendrilHttpServer {
   server: http.Server;
