@@ -137,7 +137,7 @@ function defaultPosixGroupAlive(pid: number): boolean {
         try {
           process.kill(pid, 0);
           return true;
-        } catch (leaderError) {
+        } catch (_leaderError) {
           return false;
         }
       }

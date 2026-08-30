@@ -45,17 +45,26 @@ describe('MCP server', () => {
   it('retains research refinement state across stateless MCP server instances', async () => {
     const manager = { config: { searchProviders: ['bing'], maxSessions: 1 } } as unknown as BrowserManager;
     const search = new SearchService(manager, new Logger('error'), new SearchCache(), () => 0);
-    Object.defineProperty(search, 'research', { value: vi.fn(async ({ queries }: { queries: string[] }) => ({
-      queries, sources: [], evidence: [], failures: [],
-    })) });
+    Object.defineProperty(search, 'research', {
+      value: vi.fn(async ({ queries }: { queries: string[] }) => ({
+        queries,
+        sources: [],
+        evidence: [],
+        failures: [],
+      })),
+    });
     const crawl = {} as CrawlService;
     const callResearch = async (arguments_: Record<string, unknown>) => {
       const server = createMcpServer({ manager, search, crawl });
       const client = new Client({ name: 'research-state-test', version: '1.0.0' });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-      try { return await client.callTool({ name: 'browser_research', arguments: arguments_ }); }
-      finally { await client.close(); await server.close(); }
+      try {
+        return await client.callTool({ name: 'browser_research', arguments: arguments_ });
+      } finally {
+        await client.close();
+        await server.close();
+      }
     };
 
     const started = await callResearch({ action: 'start', queries: ['initial'] });

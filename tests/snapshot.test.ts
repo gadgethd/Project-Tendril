@@ -23,9 +23,16 @@ function fakeElementHandle(element: Element): ElementHandle<HTMLElement | SVGEle
   return handle as unknown as ElementHandle<HTMLElement | SVGElement>;
 }
 
-function fakePayloadHandle<T extends {
-  nodes: unknown; targets: Element[]; document: Document; visitedNodes: number; semanticChars: number; truncated: boolean;
-}>(payload: T) {
+function fakePayloadHandle<
+  T extends {
+    nodes: unknown;
+    targets: Element[];
+    document: Document;
+    visitedNodes: number;
+    semanticChars: number;
+    truncated: boolean;
+  },
+>(payload: T) {
   const targetHandles = payload.targets.map(fakeElementHandle);
   return {
     evaluate: async (callback: (value: T) => unknown) => callback(payload),
@@ -59,10 +66,17 @@ function pageReturning(rawNodes: TestRawNode[]): Page {
   const nodes = rawNodes.map(prepare);
   const frame = {
     url: () => 'https://example.test/',
-    locator: () => ({ evaluateHandle: async () => fakePayloadHandle({
-      nodes: structuredClone(nodes), targets, document, visitedNodes: nodes.length, truncated: false,
-      semanticChars: JSON.stringify(nodes).length,
-    }) }),
+    locator: () => ({
+      evaluateHandle: async () =>
+        fakePayloadHandle({
+          nodes: structuredClone(nodes),
+          targets,
+          document,
+          visitedNodes: nodes.length,
+          truncated: false,
+          semanticChars: JSON.stringify(nodes).length,
+        }),
+    }),
   } as unknown as Frame;
   return {
     frames: () => [frame],
@@ -100,9 +114,14 @@ function pageForHtml(fragment: string, inspectPayload?: (payload: { nodes: unkno
           try {
             const payload = callback(document.body, options);
             inspectPayload?.(payload);
-            return fakePayloadHandle(payload as ReturnType<typeof callback> & {
-              document: Document; visitedNodes: number; semanticChars: number; truncated: boolean;
-            });
+            return fakePayloadHandle(
+              payload as ReturnType<typeof callback> & {
+                document: Document;
+                visitedNodes: number;
+                semanticChars: number;
+                truncated: boolean;
+              },
+            );
           } finally {
             for (const [key, saved] of previous) {
               if (saved.present) host[key] = saved.value;
@@ -219,17 +238,18 @@ test('bounds fingerprint representations and the aggregate browser-side semantic
   const attributes = ELEMENT_FINGERPRINT_OPTIONS.attributes.map((name) => `${name}="${oversized}"`).join(' ');
   let largestFingerprint = 0;
   let serializedNodes = 0;
-  const page = pageForHtml(`<button ${attributes}></button>${
-    Array.from({ length: 2_099 }, () => `<button aria-label="${oversized}"></button>`).join('')
-  }`, (payload) => {
-    serializedNodes = JSON.stringify(payload.nodes).length;
-    const pending = [...(payload.nodes as Array<Record<string, unknown>>)] as Array<Record<string, unknown>>;
-    while (pending.length > 0) {
-      const node = pending.pop()!;
-      if (typeof node.fingerprint === 'string') largestFingerprint = Math.max(largestFingerprint, node.fingerprint.length);
-      if (Array.isArray(node.children)) pending.push(...node.children as Array<Record<string, unknown>>);
-    }
-  });
+  const page = pageForHtml(
+    `<button ${attributes}></button>${Array.from({ length: 2_099 }, () => `<button aria-label="${oversized}"></button>`).join('')}`,
+    (payload) => {
+      serializedNodes = JSON.stringify(payload.nodes).length;
+      const pending = [...(payload.nodes as Array<Record<string, unknown>>)] as Array<Record<string, unknown>>;
+      while (pending.length > 0) {
+        const node = pending.pop()!;
+        if (typeof node.fingerprint === 'string') largestFingerprint = Math.max(largestFingerprint, node.fingerprint.length);
+        if (Array.isArray(node.children)) pending.push(...(node.children as Array<Record<string, unknown>>));
+      }
+    },
+  );
 
   const created = await createSnapshot({ page, pageId: 'page-1', mode: 'full', maxChars: 1_000_000 });
 

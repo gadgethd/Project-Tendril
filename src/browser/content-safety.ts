@@ -1,8 +1,24 @@
 export const REDACTED_VALUE = '[redacted]';
 export const SENSITIVE_CONTROL_PATTERN_SOURCE = [
-  'password', 'hidden', 'secret', 'token', 'api.?key', 'authorization', 'credential',
-  'csrf', 'xsrf', 'session', 'cookie', 'bearer', 'otp', 'one[-_ ]?time', '(?:^|[-_ ])pin(?:$|[-_ ])',
-  'credit[-_ ]?card', '(?:^|[-_ ])cc[-_ ]', 'cvc', 'cvv',
+  'password',
+  'hidden',
+  'secret',
+  'token',
+  'api.?key',
+  'authorization',
+  'credential',
+  'csrf',
+  'xsrf',
+  'session',
+  'cookie',
+  'bearer',
+  'otp',
+  'one[-_ ]?time',
+  '(?:^|[-_ ])pin(?:$|[-_ ])',
+  'credit[-_ ]?card',
+  '(?:^|[-_ ])cc[-_ ]',
+  'cvc',
+  'cvv',
 ].join('|');
 const MAX_WARNING_SCAN_CHARS = 1_000_000;
 const MAX_WARNING_SCAN_ENTRIES = 50_000;
@@ -32,8 +48,14 @@ function safetyText(value: unknown): string {
     if (current.key) append(current.key);
     const entry = current.value;
     if (entry === null || entry === undefined || current.depth > MAX_WARNING_SCAN_DEPTH) continue;
-    if (typeof entry === 'string') { append(entry); continue; }
-    if (typeof entry !== 'object') { append(String(entry)); continue; }
+    if (typeof entry === 'string') {
+      append(entry);
+      continue;
+    }
+    if (typeof entry !== 'object') {
+      append(String(entry));
+      continue;
+    }
     if (seen.has(entry)) continue;
     seen.add(entry);
     const capacity = Math.max(0, remainingEntries - pending.length);
@@ -42,7 +64,11 @@ function safetyText(value: unknown): string {
       const count = Math.min(entry.length, capacity);
       for (let index = count - 1; index >= 0; index -= 1) {
         let item: unknown;
-        try { item = entry[index]; } catch { continue; }
+        try {
+          item = entry[index];
+        } catch {
+          continue;
+        }
         pending.push({ value: item, depth: current.depth + 1 });
       }
       continue;
@@ -53,7 +79,11 @@ function safetyText(value: unknown): string {
         if (children.length >= capacity) break;
         if (!Object.hasOwn(entry, key)) continue;
         let item: unknown;
-        try { item = (entry as Record<string, unknown>)[key]; } catch { continue; }
+        try {
+          item = (entry as Record<string, unknown>)[key];
+        } catch {
+          continue;
+        }
         children.push({ value: item, depth: current.depth + 1, key });
       }
     } catch {

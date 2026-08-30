@@ -27,6 +27,7 @@
         "noGlobalEval": "off"
       },
       "suspicious": {
+        "noControlCharactersInRegex": "off",
         "noImplicitAnyLet": "warn"
       }
     }
