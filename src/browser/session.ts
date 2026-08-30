@@ -118,6 +118,24 @@ function boundedTimeout(configuredMs: number, deadlineMs?: number): number {
   return Math.max(1, Math.min(configuredMs, remaining));
 }
 
+function urlDomainMatches(value: string, domain: string): boolean {
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//.test(value) ? value : `https://${value}`);
+    return url.hostname === domain || url.hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
+function urlPathStartsWith(value: string, prefix: string): boolean {
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//.test(value) ? value : `https://${value}`);
+    return url.pathname.startsWith(prefix);
+  } catch {
+    return false;
+  }
+}
+
 const MAX_STORED_SNAPSHOTS = 20;
 const MAX_STORED_SNAPSHOT_CHARS = 1_000_000;
 const MAX_TOTAL_STORED_SNAPSHOT_CHARS = 5_000_000;
@@ -1779,12 +1797,12 @@ export class TendrilSession {
     } else if (signals.hcaptcha) {
       provider = 'hcaptcha';
       kind = 'captcha';
-    } else if (lowerUrl.includes('duckduckgo.com') && /bots use duckduckgo|select all squares/.test(lowerText)) {
+    } else if (urlDomainMatches(lowerUrl, 'duckduckgo.com') && /bots use duckduckgo|select all squares/.test(lowerText)) {
       provider = 'duckduckgo';
       kind = 'captcha';
-    } else if (lowerUrl.includes('google.com/sorry') || /unusual traffic from your computer network/.test(lowerText)) {
+    } else if ((urlDomainMatches(lowerUrl, 'google.com') && urlPathStartsWith(lowerUrl, '/sorry')) || /unusual traffic from your computer network/.test(lowerText)) {
       provider = 'google';
-      kind = lowerUrl.includes('/sorry') ? 'captcha' : 'rate-limit';
+      kind = urlPathStartsWith(lowerUrl, '/sorry') ? 'captcha' : 'rate-limit';
     } else if (/captcha|verify you are human|security check/.test(`${lowerTitle} ${lowerText.slice(0, 3000)}`)) {
       provider = 'unknown';
       kind = 'unknown';
