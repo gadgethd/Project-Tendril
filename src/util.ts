@@ -20,15 +20,51 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+export const SENSITIVE_URL_KEY_PATTERN_SOURCE = [
+  '(?:^|[_-])(?:access|refresh|id)?[_-]?token(?:$|[_-])',
+  '(?:^|[_-])(?:api[_-]?key|key|secret|password|passwd|authorization|auth|session|cookie|credential|signature)(?:$|[_-])',
+  '^(?:sig|code|awsaccesskeyid|googleaccessid)$',
+  '^x-(?:amz|goog)-',
+].join('|');
+
+export function isSensitiveUrlKey(key: string): boolean {
+  return new RegExp(SENSITIVE_URL_KEY_PATTERN_SOURCE, 'i').test(key.slice(0, 500));
+}
+
 export function redactUrl(raw: string): string {
+  const redactParameters = (parameters: URLSearchParams): void => {
+    for (const key of [...parameters.keys()]) {
+      if (isSensitiveUrlKey(key)) parameters.set(key, '[redacted]');
+    }
+  };
+  const redactHash = (hash: string): string => {
+    if (!hash) return '';
+    const queryIndex = hash.indexOf('?');
+    const prefix = queryIndex >= 0 ? hash.slice(0, queryIndex + 1) : '';
+    const parameterText = queryIndex >= 0 ? hash.slice(queryIndex + 1) : hash;
+    if (!parameterText.includes('=')) return isSensitiveUrlKey(parameterText) ? '[redacted]' : hash;
+    const parameters = new URLSearchParams(parameterText);
+    redactParameters(parameters);
+    return `${prefix}${parameters.toString()}`;
+  };
   try {
-    const url = new URL(raw);
+    const parameterOnly = !/[/?#]/.test(raw) && raw.includes('=');
+    if (parameterOnly) {
+      const parameters = new URLSearchParams(raw);
+      redactParameters(parameters);
+      return parameters.toString();
+    }
+    const absolute = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(raw) || raw.startsWith('//');
+    const url = new URL(raw, 'https://redaction.invalid/');
     if (url.username) url.username = '[redacted]';
     if (url.password) url.password = '[redacted]';
-    for (const key of [...url.searchParams.keys()]) {
-      if (/token|key|secret|password|auth|session/i.test(key)) url.searchParams.set(key, '[redacted]');
-    }
-    return url.toString();
+    redactParameters(url.searchParams);
+    url.hash = redactHash(url.hash.slice(1));
+    if (absolute) return url.toString();
+    if (raw.startsWith('#')) return url.hash;
+    if (raw.startsWith('?')) return `${url.search}${url.hash}`;
+    const pathAndQuery = `${url.pathname}${url.search}${url.hash}`;
+    return raw.startsWith('/') ? pathAndQuery : pathAndQuery.replace(/^\//, '');
   } catch {
     return raw;
   }

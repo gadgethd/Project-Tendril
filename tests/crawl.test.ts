@@ -337,7 +337,7 @@ describe('CrawlService', () => {
     expect(new URL(redirected.finalUrl).searchParams.get('secret')).toBe('[redacted]');
     expect(JSON.stringify(redirected)).not.toContain('source-secret');
     expect(JSON.stringify(redirected)).not.toContain('destination-secret');
-    expect(fetchText).toHaveBeenCalledWith('https://destination.example/robots.txt', undefined, expect.any(AbortSignal));
+    expect(fetchText).toHaveBeenCalledWith('https://destination.example/robots.txt', undefined, { signal: expect.any(AbortSignal) });
     expect(session.extract).not.toHaveBeenCalled();
     await service.close();
   });
