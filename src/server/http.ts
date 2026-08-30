@@ -1,24 +1,18 @@
 import http from 'node:http';
 import { isIP, type Socket } from 'node:net';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import httpProxy from 'http-proxy';
 import ipaddr from 'ipaddr.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { CrawlService } from '../browser/crawl.js';
 import type { BrowserManager, SessionLease } from '../browser/manager.js';
 import type { SearchService } from '../browser/search.js';
-import type { CrawlService } from '../browser/crawl.js';
 import { asTendrilError } from '../errors.js';
+import { constantTimeTokenEqual, createCdpCapability, loadOrCreateHttpToken, parseBearerAuthorization, verifyCdpCapability } from '../security/auth.js';
 import { BoundedRateLimiter, type RateLimitDecision } from '../security/rate-limit.js';
-import { type Logger } from '../util.js';
-import {
-  constantTimeTokenEqual,
-  createCdpCapability,
-  loadOrCreateHttpToken,
-  parseBearerAuthorization,
-  verifyCdpCapability,
-} from '../security/auth.js';
-import { createMcpServer } from './mcp.js';
+import type { Logger } from '../util.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { createMcpServer } from './mcp.js';
 
 export interface TendrilHttpServer {
   server: http.Server;
@@ -32,9 +26,14 @@ function errorHandler(logger: Logger) {
   return (error: unknown, _request: Request, response: Response, _next: NextFunction): void => {
     const tendril = asTendrilError(error);
     logger.warn('HTTP request failed', { code: tendril.code, error: tendril.message });
-    const status = tendril.code === 'SESSION_NOT_FOUND' || tendril.code === 'PAGE_NOT_FOUND' ? 404
-      : tendril.code === 'NETWORK_BLOCKED' || tendril.code === 'FILE_ACCESS_DENIED' ? 403
-        : tendril.code === 'SESSION_LIMIT_REACHED' ? 429 : 400;
+    const status =
+      tendril.code === 'SESSION_NOT_FOUND' || tendril.code === 'PAGE_NOT_FOUND'
+        ? 404
+        : tendril.code === 'NETWORK_BLOCKED' || tendril.code === 'FILE_ACCESS_DENIED'
+          ? 403
+          : tendril.code === 'SESSION_LIMIT_REACHED'
+            ? 429
+            : 400;
     response.status(status).json({ error: { code: tendril.code, message: tendril.message, retryable: tendril.retryable, details: tendril.details } });
   };
 }
@@ -54,11 +53,14 @@ export function normalizeHostAuthority(authority: string | undefined): string | 
 async function withRequestSignal<T>(request: Request, response: Response, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const abort = (): void => controller.abort(new Error('HTTP client disconnected'));
-  const abortIfUnfinished = (): void => { if (!response.writableFinished) abort(); };
+  const abortIfUnfinished = (): void => {
+    if (!response.writableFinished) abort();
+  };
   request.once('aborted', abort);
   response.once('close', abortIfUnfinished);
-  try { return await operation(controller.signal); }
-  finally {
+  try {
+    return await operation(controller.signal);
+  } finally {
     request.removeListener('aborted', abort);
     response.removeListener('close', abortIfUnfinished);
   }
@@ -102,10 +104,12 @@ export function hostHeaderAllowed(authority: string | undefined, configuredHost:
   const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
   const isConfiguredHost = configured !== undefined && host === configured;
   const privateAddress = classifyPrivateAddress(host);
-  return isLoopback
-    || isConfiguredHost
-    || (configured === '0.0.0.0' && privateAddress === 'ipv4')
-    || (configured === '::' && (privateAddress === 'ipv4' || privateAddress === 'ipv6'));
+  return (
+    isLoopback ||
+    isConfiguredHost ||
+    (configured === '0.0.0.0' && privateAddress === 'ipv4') ||
+    (configured === '::' && (privateAddress === 'ipv4' || privateAddress === 'ipv6'))
+  );
 }
 
 function peerKey(address: string | undefined): string {
@@ -118,7 +122,12 @@ function setRateLimitedResponse(response: Response, decision: RateLimitDecision)
   response.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many authentication attempts' } });
 }
 
-export async function startHttpServer(services: { manager: BrowserManager; search: SearchService; crawl: CrawlService; logger: Logger }): Promise<TendrilHttpServer> {
+export async function startHttpServer(services: {
+  manager: BrowserManager;
+  search: SearchService;
+  crawl: CrawlService;
+  logger: Logger;
+}): Promise<TendrilHttpServer> {
   const { manager, search, crawl, logger } = services;
   const token = await loadOrCreateHttpToken({ configuredToken: manager.config.token, dataDir: manager.config.dataDir });
   const authFailures = new BoundedRateLimiter({ limit: 10, windowMs: 60_000, maxKeys: 1_024 });
@@ -192,48 +201,110 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
   app.post('/mcp', async (request, response) => {
     const mcp = createMcpServer({ manager, search, crawl });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    response.on('close', () => { void transport.close(); void mcp.close(); });
-    try { await mcp.connect(transport); await transport.handleRequest(request, response, request.body); }
-    catch (error) { if (!response.headersSent) response.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: String(error) }, id: null }); }
+    response.on('close', () => {
+      void transport.close();
+      void mcp.close();
+    });
+    try {
+      await mcp.connect(transport);
+      await transport.handleRequest(request, response, request.body);
+    } catch (error) {
+      if (!response.headersSent) response.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: String(error) }, id: null });
+    }
   });
   app.get('/mcp', (_request, response) => response.status(405).json({ error: 'Method not allowed' }));
   app.delete('/mcp', (_request, response) => response.status(405).json({ error: 'Method not allowed' }));
 
   app.get('/v1/sessions', async (request, response, next) => {
-    try { response.json({ sessions: await manager.list((session) => publicCdpUrl(manager, session.id, session.chromium.browserPath, token, request.headers.host)) }); } catch (error) { next(error); }
+    try {
+      response.json({
+        sessions: await manager.list((session) => publicCdpUrl(manager, session.id, session.chromium.browserPath, token, request.headers.host)),
+      });
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions', async (request, response, next) => {
-    try { response.status(201).json(await (await manager.create(request.body)).info()); } catch (error) { next(error); }
+    try {
+      response.status(201).json(await (await manager.create(request.body)).info());
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/v1/sessions/:id', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).info(publicCdpUrl(manager, request.params.id!, manager.get(request.params.id!).chromium.browserPath, token, request.headers.host))); } catch (error) { next(error); }
+    try {
+      response.json(
+        await manager
+          .get(request.params.id!)
+          .info(publicCdpUrl(manager, request.params.id!, manager.get(request.params.id!).chromium.browserPath, token, request.headers.host)),
+      );
+    } catch (error) {
+      next(error);
+    }
   });
   app.delete('/v1/sessions/:id', async (request, response, next) => {
-    try { await manager.close(request.params.id!); response.status(204).end(); } catch (error) { next(error); }
+    try {
+      await manager.close(request.params.id!);
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/pages', async (request, response, next) => {
-    try { response.status(201).json(await manager.get(request.params.id!).openPage(request.body.url)); } catch (error) { next(error); }
+    try {
+      response.status(201).json(await manager.get(request.params.id!).openPage(request.body.url));
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/v1/sessions/:id/pages', async (request, response, next) => {
-    try { response.json({ pages: await manager.get(request.params.id!).listPages() }); } catch (error) { next(error); }
+    try {
+      response.json({ pages: await manager.get(request.params.id!).listPages() });
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/navigate', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).navigate(request.body)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).navigate(request.body));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/content', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).setContent(request.body.html, request.body.pageId)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).setContent(request.body.html, request.body.pageId));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/snapshot', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).snapshot(request.body)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).snapshot(request.body));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/act', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).act(request.body)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).act(request.body));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/extract', async (request, response, next) => {
-    try { response.json({ untrustedContent: true, data: await manager.get(request.params.id!).extract(request.body) }); } catch (error) { next(error); }
+    try {
+      response.json({ untrustedContent: true, data: await manager.get(request.params.id!).extract(request.body) });
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/capture', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).capture(request.body)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).capture(request.body));
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/v1/sessions/:id/screenshot', async (request, response, next) => {
     try {
@@ -243,38 +314,76 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       const quality = Number(request.query.quality ?? 80);
       if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new Error('quality must be an integer from 1 to 100');
       response.json(await manager.get(request.params.id!).capture({ format, quality }));
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/v1/sessions/:id/inspect/:kind', async (request, response, next) => {
-    try { response.json({ entries: manager.get(request.params.id!).inspect({ kind: request.params.kind as 'console' | 'network' | 'downloads' }) }); } catch (error) { next(error); }
+    try {
+      response.json({ entries: manager.get(request.params.id!).inspect({ kind: request.params.kind as 'console' | 'network' | 'downloads' }) });
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/v1/sessions/:id/challenge', async (request, response, next) => {
-    try { response.json(await manager.get(request.params.id!).detectChallenge(request.query.pageId as string | undefined)); } catch (error) { next(error); }
+    try {
+      response.json(await manager.get(request.params.id!).detectChallenge(request.query.pageId as string | undefined));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/sessions/:id/challenge', async (request, response, next) => {
     try {
       const session = manager.get(request.params.id!);
       response.json(request.body.action === 'wait' ? await session.waitForChallenge(request.body) : await session.focusForHandoff(request.body.pageId));
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/search', async (request, response, next) => {
-    try { response.json(await withRequestSignal(request, response, (signal) => search.search({ ...request.body, signal }))); }
-    catch (error) { next(error); }
+    try {
+      response.json(await withRequestSignal(request, response, (signal) => search.search({ ...request.body, signal })));
+    } catch (error) {
+      next(error);
+    }
   });
   app.post('/v1/research', async (request, response, next) => {
-    try { response.json(await withRequestSignal(request, response, (signal) => search.research({ ...request.body, signal }))); }
-    catch (error) { next(error); }
+    try {
+      response.json(await withRequestSignal(request, response, (signal) => search.research({ ...request.body, signal })));
+    } catch (error) {
+      next(error);
+    }
   });
-  app.post('/v1/crawl', (request, response, next) => { try { response.status(202).json(crawl.start(request.body)); } catch (error) { next(error); } });
-  app.get('/v1/crawl/:id', (request, response, next) => { try { response.json(crawl.get(request.params.id!)); } catch (error) { next(error); } });
+  app.post('/v1/crawl', (request, response, next) => {
+    try {
+      response.status(202).json(crawl.start(request.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get('/v1/crawl/:id', (request, response, next) => {
+    try {
+      response.json(crawl.get(request.params.id!));
+    } catch (error) {
+      next(error);
+    }
+  });
   app.get('/v1/crawl/:id/results', (request, response, next) => {
     try {
       const offset = request.query.offset === undefined ? undefined : Number(request.query.offset);
       const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
       response.json(crawl.results(request.params.id!, { offset, limit }));
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
-  app.delete('/v1/crawl/:id', (request, response, next) => { try { response.json(crawl.cancel(request.params.id!)); } catch (error) { next(error); } });
+  app.delete('/v1/crawl/:id', (request, response, next) => {
+    try {
+      response.json(crawl.cancel(request.params.id!));
+    } catch (error) {
+      next(error);
+    }
+  });
 
   for (const format of ['snapshot', 'content', 'markdown', 'accessibility-tree', 'links', 'screenshot', 'pdf'] as const) {
     app.post(`/v1/${format}`, async (request, response, next) => {
@@ -291,7 +400,7 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
         if (request.body.html) await session.setContent(request.body.html);
         else if (request.body.url) await session.navigate({ url: request.body.url, waitUntil: request.body.waitUntil ?? 'domcontentloaded' });
         if (format === 'screenshot' || format === 'pdf') {
-          const captured = await session.capture({ format: format === 'pdf' ? 'pdf' : request.body.type ?? 'png', fullPage: request.body.fullPage });
+          const captured = await session.capture({ format: format === 'pdf' ? 'pdf' : (request.body.type ?? 'png'), fullPage: request.body.fullPage });
           output = { kind: 'binary', mimeType: captured.mimeType, body: Buffer.from(captured.data, 'base64') };
         } else if (format === 'snapshot') {
           const formats: string[] = request.body.formats ?? ['content', 'screenshot'];
@@ -302,7 +411,10 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
           if (formats.includes('screenshot')) snapshotOutput.screenshot = await session.capture({ format: 'png', fullPage: request.body.fullPage });
           output = { kind: 'json', body: snapshotOutput };
         } else {
-          const mapped = format === 'accessibility-tree' ? await session.snapshot({ mode: 'full' }) : await session.extract({ format: format === 'content' ? 'html' : format });
+          const mapped =
+            format === 'accessibility-tree'
+              ? await session.snapshot({ mode: 'full' })
+              : await session.extract({ format: format === 'content' ? 'html' : format });
           output = { kind: 'json', body: { url: request.body.url, [format.replace('-', '')]: mapped, untrustedContent: true } };
         }
       } catch (error) {
@@ -319,10 +431,9 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
         if (operationFailure !== undefined && cleanupFailure !== undefined) {
           const operationMessage = operationFailure instanceof Error ? operationFailure.message : String(operationFailure);
           const cleanupMessage = cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure);
-          next(new AggregateError(
-            [operationFailure, cleanupFailure],
-            `Quick route operation failed (${operationMessage}) and cleanup failed (${cleanupMessage})`,
-          ));
+          next(
+            new AggregateError([operationFailure, cleanupFailure], `Quick route operation failed (${operationMessage}) and cleanup failed (${cleanupMessage})`),
+          );
         } else {
           next(operationFailure ?? cleanupFailure);
         }
@@ -353,7 +464,9 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       request.url = `${forwarded.pathname.replace(`/cdp/${id}`, '') || '/'}${forwarded.search}`;
       delete request.headers.authorization;
       proxy.web(request, response, { target: session.backendCdpHttpUrl() });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
   app.use(errorHandler(logger));
 
@@ -374,10 +487,9 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       const match = url.pathname.match(/^\/cdp\/([^/]+)(\/.*)$/);
       const sessionId = match?.[1];
       const peer = peerKey(request.socket.remoteAddress);
-      const authorized = sessionId !== undefined && (
-        constantTimeTokenEqual(bearerToken(request), token)
-        || verifyCdpCapability(url.searchParams.get('capability') ?? undefined, token, sessionId)
-      );
+      const authorized =
+        sessionId !== undefined &&
+        (constantTimeTokenEqual(bearerToken(request), token) || verifyCdpCapability(url.searchParams.get('capability') ?? undefined, token, sessionId));
       if (!match || !sessionId || !authorized) {
         const attempt = cdpAttempts.attempt(peer);
         if (!attempt.allowed) {
@@ -400,11 +512,16 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
       request.url = `${match[2]}${url.search}`;
       delete request.headers.authorization;
       proxy.ws(request, socket, head, { target: session.backendCdpHttpUrl().replace('http:', 'ws:') });
-    } catch { socket.destroy(); }
+    } catch {
+      socket.destroy();
+    }
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(manager.config.port, manager.config.host, () => { server.off('error', reject); resolve(); });
+    server.listen(manager.config.port, manager.config.host, () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : manager.config.port;
@@ -413,7 +530,10 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
   logger.info('Tendril HTTP server listening', { host: manager.config.host, port });
   let closePromise: Promise<void> | undefined;
   return {
-    server, port, token, dashboardUrl,
+    server,
+    port,
+    token,
+    dashboardUrl,
     async close() {
       if (!closePromise) {
         closePromise = (async () => {
@@ -428,32 +548,33 @@ export async function startHttpServer(services: { manager: BrowserManager; searc
   };
 }
 
-function publicCdpUrl(
-  manager: BrowserManager,
-  sessionId: string,
-  browserPath: string,
-  token: string,
-  requestAuthority?: string,
-): string {
+function publicCdpUrl(manager: BrowserManager, sessionId: string, browserPath: string, token: string, requestAuthority?: string): string {
   const capability = createCdpCapability(token, sessionId);
   return `ws://${formatUrlAuthority(advertisedHost(manager.config.host, requestAuthority), manager.config.port)}/cdp/${sessionId}${browserPath}?capability=${encodeURIComponent(capability)}`;
 }
 
 function openApiDocument(port: number): Record<string, unknown> {
   return {
-    openapi: '3.1.0', info: { title: 'Project Tendril API', version: '1.1.0' },
+    openapi: '3.1.0',
+    info: { title: 'Project Tendril API', version: '1.1.0' },
     servers: [{ url: `http://127.0.0.1:${port}` }],
-    components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } }, security: [{ bearerAuth: [] }],
+    components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
+    security: [{ bearerAuth: [] }],
     paths: {
       '/v1/sessions': { get: { summary: 'List browser sessions' }, post: { summary: 'Create browser session' } },
       '/v1/sessions/{id}': { get: { summary: 'Inspect session' }, delete: { summary: 'Close session' } },
       '/v1/sessions/{id}/screenshot': { get: { summary: 'Capture a live session screenshot' } },
       '/v1/snapshot': { post: { summary: 'Capture multiple rendered page formats' } },
-      '/v1/content': { post: { summary: 'Extract rendered HTML' } }, '/v1/markdown': { post: { summary: 'Extract Markdown' } },
-      '/v1/accessibility-tree': { post: { summary: 'Extract semantic tree' } }, '/v1/links': { post: { summary: 'Extract links' } },
-      '/v1/screenshot': { post: { summary: 'Capture screenshot' } }, '/v1/pdf': { post: { summary: 'Generate PDF' } },
-      '/v1/search': { post: { summary: 'Search the web with Chromium' } }, '/v1/research': { post: { summary: 'Gather cited web evidence' } },
-      '/v1/crawl': { post: { summary: 'Start a bounded crawl' } }, '/mcp': { post: { summary: 'MCP Streamable HTTP endpoint' } },
+      '/v1/content': { post: { summary: 'Extract rendered HTML' } },
+      '/v1/markdown': { post: { summary: 'Extract Markdown' } },
+      '/v1/accessibility-tree': { post: { summary: 'Extract semantic tree' } },
+      '/v1/links': { post: { summary: 'Extract links' } },
+      '/v1/screenshot': { post: { summary: 'Capture screenshot' } },
+      '/v1/pdf': { post: { summary: 'Generate PDF' } },
+      '/v1/search': { post: { summary: 'Search the web with Chromium' } },
+      '/v1/research': { post: { summary: 'Gather cited web evidence' } },
+      '/v1/crawl': { post: { summary: 'Start a bounded crawl' } },
+      '/mcp': { post: { summary: 'MCP Streamable HTTP endpoint' } },
     },
   };
 }

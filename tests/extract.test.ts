@@ -20,9 +20,8 @@ function pageForHtml(html: string, prepare?: (document: Document) => void): Page
       }
     },
     locator: (selector: string) => ({
-      evaluateAll: async (callback: (elements: Element[], argument?: unknown) => unknown, argument?: unknown) => (
-        callback([...fixtureDocument.querySelectorAll(selector)], argument)
-      ),
+      evaluateAll: async (callback: (elements: Element[], argument?: unknown) => unknown, argument?: unknown) =>
+        callback([...fixtureDocument.querySelectorAll(selector)], argument),
     }),
     title: async () => fixtureDocument.title,
     url: () => 'https://example.test/article',
@@ -72,35 +71,34 @@ describe('structured extraction', () => {
       { '@type': 'Offer', price: '19.95' },
     ]);
     expect(structured.openGraph).toEqual({ title: 'OpenGraph title', type: 'article' });
-    expect(structured.microdata).toEqual([{
-      type: 'https://schema.org/Article',
-      id: 'https://example.test/article',
-      properties: {
-        headline: 'Microdata title',
-        keywords: ['browser', 'automation'],
-        author: {
-          type: 'https://schema.org/Person',
-          properties: { name: 'Microdata Author' },
+    expect(structured.microdata).toEqual([
+      {
+        type: 'https://schema.org/Article',
+        id: 'https://example.test/article',
+        properties: {
+          headline: 'Microdata title',
+          keywords: ['browser', 'automation'],
+          author: {
+            type: 'https://schema.org/Person',
+            properties: { name: 'Microdata Author' },
+          },
+          offers: {
+            type: 'https://schema.org/Offer',
+            properties: { price: '19.95', priceCurrency: 'GBP' },
+          },
+          datePublished: '2026-08-27',
         },
-        offers: {
-          type: 'https://schema.org/Offer',
-          properties: { price: '19.95', priceCurrency: 'GBP' },
-        },
-        datePublished: '2026-08-27',
       },
-    }]);
+    ]);
     expect(structured.prices).toEqual([{ amount: '19.95', currency: 'GBP', selector: '#offer-price' }]);
-    expect(structured.dates).toEqual([{
-      value: '2026-08-27',
-      label: 'datePublished',
-      selector: '#published',
-    }]);
-    expect(structured.authors).toEqual(expect.arrayContaining([
-      'Metadata Author',
-      'Microdata Author',
-      'Byline Author',
-      'Schema Author',
-    ]));
+    expect(structured.dates).toEqual([
+      {
+        value: '2026-08-27',
+        label: 'datePublished',
+        selector: '#published',
+      },
+    ]);
+    expect(structured.authors).toEqual(expect.arrayContaining(['Metadata Author', 'Microdata Author', 'Byline Author', 'Schema Author']));
   });
 
   it('omits empty sections and ignores malformed JSON-LD', async () => {
@@ -142,15 +140,18 @@ describe('structured extraction', () => {
     expect(JSON.stringify({ extracted, forms, structured })).not.toMatch(/not-for-output|TEXTAREA_SECRET|SELECT_SECRET|HIDDEN_SECRET/);
     expect(JSON.stringify(forms)).toContain('[redacted]');
     expect(extracted.untrustedContent).toBe(true);
-    expect(extracted.warnings).toEqual(expect.arrayContaining([
-      'Page content contains instruction-override language.',
-      'Page content contains terms associated with prompt injection or data exfiltration.',
-    ]));
+    expect(extracted.warnings).toEqual(
+      expect.arrayContaining([
+        'Page content contains instruction-override language.',
+        'Page content contains terms associated with prompt injection or data exfiltration.',
+      ]),
+    );
   });
 
   it('enforces a serialized structured-data envelope, recursively redacts URLs, and avoids unbounded selector scans', async () => {
     const values = Array.from({ length: 2_000 }, () => null);
-    const page = pageForHtml(`<!doctype html><html><head>
+    const page = pageForHtml(
+      `<!doctype html><html><head>
       <meta property="og:url" content="https://example.test/page?key=META_KEY&view=full#/callback?code=META_CODE&tab=docs">
       <meta property="og:__proto__" content="POLLUTED_META">
       <script type="application/ld+json">${JSON.stringify({
@@ -159,9 +160,15 @@ describe('structured extraction', () => {
         values,
         __proto_payload: { __proto__: { polluted: 'yes' }, constructor: { prototype: { polluted: 'yes' } } },
       })}</script>
-    </head><body>${Array.from({ length: 1_000 }, (_, index) => `<span data-index="${index}"></span>`).join('')}</body></html>`, (document) => {
-      Object.defineProperty(document, 'querySelectorAll', { value: () => { throw new Error('unbounded selector scan'); } });
-    });
+    </head><body>${Array.from({ length: 1_000 }, (_, index) => `<span data-index="${index}"></span>`).join('')}</body></html>`,
+      (document) => {
+        Object.defineProperty(document, 'querySelectorAll', {
+          value: () => {
+            throw new Error('unbounded selector scan');
+          },
+        });
+      },
+    );
 
     const structured = await extractStructured(page, { maxChars: 800 });
     const serialized = JSON.stringify(structured);
@@ -189,7 +196,9 @@ describe('structured extraction', () => {
     const serialized = JSON.stringify(extracted);
 
     expect(serialized.length).toBeLessThanOrEqual(4_000);
-    expect(serialized).not.toMatch(/TITLE_SECRET|METADATA_SECRET|METADATA_URL_SECRET|METADATA_FRAGMENT_SECRET|STRUCTURED_URL_SECRET|LINK_SECRET|OAUTH_SECRET|FIELD_SECRET/);
+    expect(serialized).not.toMatch(
+      /TITLE_SECRET|METADATA_SECRET|METADATA_URL_SECRET|METADATA_FRAGMENT_SECRET|STRUCTURED_URL_SECRET|LINK_SECRET|OAUTH_SECRET|FIELD_SECRET/,
+    );
     expect(serialized).toContain('[redacted]');
     expect(extracted.warnings).toContain('Extracted page content exceeded its work or output budget and was truncated.');
   });

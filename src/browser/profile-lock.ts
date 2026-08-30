@@ -41,11 +41,11 @@ async function readLock(lockPath: string, dependencies: ProfileLockDependencies)
     // lgtm[js/path-injection]
     const parsed = JSON.parse(await (dependencies.readFile ?? readFile)(lockPath, 'utf8')) as Partial<LockRecord>;
     if (
-      parsed.version !== 1
-      || typeof parsed.pid !== 'number'
-      || typeof parsed.hostname !== 'string'
-      || typeof parsed.token !== 'string'
-      || typeof parsed.createdAt !== 'string'
+      parsed.version !== 1 ||
+      typeof parsed.pid !== 'number' ||
+      typeof parsed.hostname !== 'string' ||
+      typeof parsed.token !== 'string' ||
+      typeof parsed.createdAt !== 'string'
     ) {
       throw new Error('invalid lock record');
     }
@@ -60,11 +60,7 @@ async function readLock(lockPath: string, dependencies: ProfileLockDependencies)
   }
 }
 
-async function removeOwnedLock(
-  lockPath: string,
-  token: string,
-  dependencies: ProfileLockDependencies,
-): Promise<void> {
+async function removeOwnedLock(lockPath: string, token: string, dependencies: ProfileLockDependencies): Promise<void> {
   const current = await readLock(lockPath, dependencies);
   if (!current) return;
   if (current.token !== token) {
@@ -81,11 +77,7 @@ async function removeOwnedLock(
   if (after?.token === token) throw new Error(`Profile lock still exists after release: ${lockPath}`);
 }
 
-async function publishLock(
-  lockPath: string,
-  record: LockRecord,
-  dependencies: ProfileLockDependencies,
-): Promise<boolean> {
+async function publishLock(lockPath: string, record: LockRecord, dependencies: ProfileLockDependencies): Promise<boolean> {
   const temporaryPath = `${lockPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let temporaryCreated = false;
@@ -116,7 +108,11 @@ async function publishLock(
 
   const cleanupFailures: unknown[] = [];
   if (handle) {
-    try { await handle.close(); } catch (error) { cleanupFailures.push(error); }
+    try {
+      await handle.close();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
   if (temporaryCreated) {
     try {
@@ -128,12 +124,16 @@ async function publishLock(
     }
   }
   if (published && cleanupFailures.length) {
-    try { await removeOwnedLock(lockPath, record.token, dependencies); }
-    catch (error) { cleanupFailures.push(error); }
+    try {
+      await removeOwnedLock(lockPath, record.token, dependencies);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
   if (temporaryCreated && cleanupFailures.length) {
-    try { await (dependencies.unlink ?? unlink)(temporaryPath); }
-    catch (error) {
+    try {
+      await (dependencies.unlink ?? unlink)(temporaryPath);
+    } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) cleanupFailures.push(error);
     }
   }
@@ -146,11 +146,7 @@ async function publishLock(
   return result;
 }
 
-export async function acquireProfileFileLock(
-  dataDir: string,
-  profile: string,
-  dependencies: ProfileLockDependencies = {},
-): Promise<ProfileFileLock> {
+export async function acquireProfileFileLock(dataDir: string, profile: string, dependencies: ProfileLockDependencies = {}): Promise<ProfileFileLock> {
   const portableProfile = validateProfileName(profile);
   const lockDirectory = pathWithinOwnedRoot(dataDir, '.profile-locks');
   await ensureDir(lockDirectory);
@@ -176,9 +172,7 @@ export async function acquireProfileFileLock(
   }
 
   const existing = await readLock(lockPath, dependencies);
-  const ownedByLiveLocalProcess = existing
-    && existing.hostname === os.hostname()
-    && processIsAlive(existing.pid);
+  const ownedByLiveLocalProcess = existing && existing.hostname === os.hostname() && processIsAlive(existing.pid);
   if (ownedByLiveLocalProcess) {
     throw new TendrilError('PROFILE_IN_USE', `Profile is already active: ${profile}`, { retryable: true });
   }

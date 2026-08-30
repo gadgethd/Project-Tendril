@@ -1,6 +1,6 @@
 import http from 'node:http';
-import net from 'node:net';
 import type { AddressInfo } from 'node:net';
+import net from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { EgressProxy } from '../src/security/egress-proxy.js';
 import { NetworkPolicy } from '../src/security/network-policy.js';
@@ -26,10 +26,7 @@ describe('EgressProxy lifecycle', () => {
     });
     await new Promise<void>((resolve) => destination.listen(0, '127.0.0.1', resolve));
     const destinationPort = (destination.address() as AddressInfo).port;
-    const proxy = new EgressProxy(
-      new NetworkPolicy({ blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] }),
-      new Logger('error'),
-    );
+    const proxy = new EgressProxy(new NetworkPolicy({ blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] }), new Logger('error'));
     const proxyPort = await proxy.start();
     const client = net.connect(proxyPort, '127.0.0.1');
     client.on('error', () => undefined);

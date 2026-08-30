@@ -12,12 +12,14 @@ export class BoundedRateLimiter {
   private readonly buckets = new Map<string, Bucket>();
   private readonly overflow: Bucket = { count: 0, windowStartedAt: 0 };
 
-  constructor(private readonly options: {
-    limit: number;
-    windowMs: number;
-    maxKeys: number;
-    now?: () => number;
-  }) {
+  constructor(
+    private readonly options: {
+      limit: number;
+      windowMs: number;
+      maxKeys: number;
+      now?: () => number;
+    },
+  ) {
     if (!Number.isSafeInteger(options.limit) || options.limit < 1) throw new TypeError('Rate limit must be a positive integer');
     if (!Number.isSafeInteger(options.windowMs) || options.windowMs < 1) throw new TypeError('Rate-limit window must be a positive integer');
     if (!Number.isSafeInteger(options.maxKeys) || options.maxKeys < 1) throw new TypeError('Rate-limit key bound must be a positive integer');

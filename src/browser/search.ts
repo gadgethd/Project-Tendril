@@ -1,13 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { TendrilError } from '../errors.js';
-import type {
-  EvidenceChunk,
-  SearchProviderHealth,
-  SearchProviderName,
-  SearchRateLimit,
-  SearchResult,
-} from '../types.js';
-import { hashText, newId, type Logger } from '../util.js';
+import type { EvidenceChunk, SearchProviderHealth, SearchProviderName, SearchRateLimit, SearchResult } from '../types.js';
+import { hashText, type Logger, newId } from '../util.js';
 import type { BrowserManager } from './manager.js';
 import type { TendrilSession } from './session.js';
 
@@ -37,13 +31,48 @@ const MAX_RESEARCH_JOBS = 100;
 const RRF_K = 60;
 
 const SEARCH_STOP_WORDS = new Set([
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how', 'in', 'is', 'it', 'of',
-  'on', 'or', 'that', 'the', 'this', 'to', 'was', 'what', 'when', 'where', 'which', 'who', 'with',
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'by',
+  'for',
+  'from',
+  'how',
+  'in',
+  'is',
+  'it',
+  'of',
+  'on',
+  'or',
+  'that',
+  'the',
+  'this',
+  'to',
+  'was',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'with',
 ]);
 
 const AUTHORITY_DOMAINS = [
-  'apnews.com', 'bbc.com', 'developer.mozilla.org', 'github.com', 'ietf.org', 'nodejs.org',
-  'reuters.com', 'stackoverflow.com', 'typescriptlang.org', 'w3.org', 'wikipedia.org',
+  'apnews.com',
+  'bbc.com',
+  'developer.mozilla.org',
+  'github.com',
+  'ietf.org',
+  'nodejs.org',
+  'reuters.com',
+  'stackoverflow.com',
+  'typescriptlang.org',
+  'w3.org',
+  'wikipedia.org',
 ] as const;
 
 export interface SearchOptions {
@@ -219,8 +248,11 @@ class Semaphore {
 
   async run<T>(signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
     const release = await this.acquire(signal);
-    try { return await operation(); }
-    finally { release(); }
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private acquire(signal?: AbortSignal): Promise<() => void> {
@@ -279,7 +311,9 @@ function truncate(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : value.slice(0, maxChars);
 }
 
-function cloneFailure(failure: SearchProviderFailure): SearchProviderFailure { return { ...failure }; }
+function cloneFailure(failure: SearchProviderFailure): SearchProviderFailure {
+  return { ...failure };
+}
 
 function cloneResult(result: SearchResult): SearchResult {
   return {
@@ -300,9 +334,11 @@ function normalizeQuery(query: string): string {
 }
 
 function semanticFingerprint(semantics: SearchSemantics): string {
-  return JSON.stringify(Object.entries(semantics)
-    .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right)));
+  return JSON.stringify(
+    Object.entries(semantics)
+      .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
 }
 
 function cacheKey(query: string, provider: SearchProviderName, semantics: SearchSemantics): string {
@@ -366,13 +402,18 @@ function operationScope(options: { signal?: AbortSignal; deadlineMs?: number; ti
   const deadlineMs = Math.min(options.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + timeoutMs);
   const onAbort = (): void => {
     const reason = options.signal?.reason;
-    controller.abort(reason instanceof TendrilError
-      ? reason
-      : new TendrilError('CANCELLED', reason instanceof Error ? reason.message : 'Operation cancelled', { retryable: true, cause: reason }));
+    controller.abort(
+      reason instanceof TendrilError
+        ? reason
+        : new TendrilError('CANCELLED', reason instanceof Error ? reason.message : 'Operation cancelled', { retryable: true, cause: reason }),
+    );
   };
   options.signal?.addEventListener('abort', onAbort, { once: true });
   if (options.signal?.aborted) onAbort();
-  const timer = setTimeout(() => controller.abort(new TendrilError('TIMEOUT', 'Operation deadline exceeded', { retryable: true })), Math.max(0, deadlineMs - Date.now()));
+  const timer = setTimeout(
+    () => controller.abort(new TendrilError('TIMEOUT', 'Operation deadline exceeded', { retryable: true })),
+    Math.max(0, deadlineMs - Date.now()),
+  );
   timer.unref();
   return {
     signal: controller.signal,
@@ -417,32 +458,48 @@ export function normalizeResultUrl(raw: string): string | undefined {
 }
 
 function normalizeSearchText(value: string): string {
-  return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }
 
 function queryTerms(query: string): string[] {
-  return [...new Set(normalizeSearchText(query).split(' ').filter((term) => term.length > 1 && !SEARCH_STOP_WORDS.has(term)))];
+  return [
+    ...new Set(
+      normalizeSearchText(query)
+        .split(' ')
+        .filter((term) => term.length > 1 && !SEARCH_STOP_WORDS.has(term)),
+    ),
+  ];
 }
 
 export function isOfficialMcpUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
-    const hostname = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '');
+    const hostname = url.hostname
+      .toLowerCase()
+      .replace(/\.$/, '')
+      .replace(/^www\./, '');
     if (hostname === 'modelcontextprotocol.io' || hostname.endsWith('.modelcontextprotocol.io')) return true;
     if (hostname !== 'github.com') return false;
     return url.pathname.split('/').filter(Boolean)[0]?.toLowerCase() === 'modelcontextprotocol';
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function authorityScore(rawUrl: string, terms: string[]): number {
   try {
     const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/\.$/, '');
-    const hasMcpIntent = terms.includes('mcp')
-      || (terms.includes('model') && terms.includes('context') && terms.includes('protocol'));
+    const hasMcpIntent = terms.includes('mcp') || (terms.includes('model') && terms.includes('context') && terms.includes('protocol'));
     if (hasMcpIntent && isOfficialMcpUrl(rawUrl)) return 50;
     if (AUTHORITY_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`))) return 4;
     if (/\.(?:gov|edu)$/.test(hostname) || hostname.endsWith('.gov.uk') || hostname.endsWith('.ac.uk')) return 4;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
   return 0;
 }
 
@@ -458,12 +515,14 @@ function relevanceScore(result: SearchResult, query: string): number {
   const titleTerms = new Set(title.split(' ').filter(Boolean));
   const snippetTerms = new Set(snippet.split(' ').filter(Boolean));
   const normalizedQuery = normalizeSearchText(query);
-  return terms.filter((term) => titleTerms.has(term)).length * 6
-    + terms.filter((term) => snippetTerms.has(term)).length * 2
-    + (normalizedQuery && title.includes(normalizedQuery) ? 10 : 0)
-    + (normalizedQuery && snippet.includes(normalizedQuery) ? 3 : 0)
-    + authorityScore(result.url, terms)
-    + Math.min(2, Math.max(0, result.providerScore ?? 0));
+  return (
+    terms.filter((term) => titleTerms.has(term)).length * 6 +
+    terms.filter((term) => snippetTerms.has(term)).length * 2 +
+    (normalizedQuery && title.includes(normalizedQuery) ? 10 : 0) +
+    (normalizedQuery && snippet.includes(normalizedQuery) ? 3 : 0) +
+    authorityScore(result.url, terms) +
+    Math.min(2, Math.max(0, result.providerScore ?? 0))
+  );
 }
 
 function hasRelevantResults(results: SearchResult[], query: string): boolean {
@@ -476,7 +535,10 @@ function hasRelevantResults(results: SearchResult[], query: string): boolean {
 export function rankResults(results: SearchResult[], query: string): SearchResult[] {
   return results
     .map((result, index) => ({ result: cloneResult(result), index, relevance: relevanceScore(result, query) }))
-    .sort((left, right) => right.relevance - left.relevance || left.result.rank - right.result.rank || left.index - right.index || left.result.url.localeCompare(right.result.url))
+    .sort(
+      (left, right) =>
+        right.relevance - left.relevance || left.result.rank - right.result.rank || left.index - right.index || left.result.url.localeCompare(right.result.url),
+    )
     .map(({ result, relevance }, index) => ({ ...result, rank: index + 1, score: relevance }));
 }
 
@@ -504,8 +566,11 @@ export function fuseResults(
       const existing = aggregated.get(canonical);
       if (!existing) {
         aggregated.set(canonical, {
-          representative: { ...cloneResult(result), url: canonical }, relevance, fusedScore: contribution,
-          providerRanks: { [success.provider]: result.rank }, providers: [success.provider],
+          representative: { ...cloneResult(result), url: canonical },
+          relevance,
+          fusedScore: contribution,
+          providerRanks: { [success.provider]: result.rank },
+          providers: [success.provider],
         });
         continue;
       }
@@ -525,18 +590,26 @@ export function fuseResults(
       entry.providers.sort((left, right) => (order.get(left) ?? 999) - (order.get(right) ?? 999));
       return { ...entry.representative, providers: entry.providers, providerRanks: entry.providerRanks, score: entry.fusedScore + entry.relevance / 100 };
     })
-    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0)
-      || (order.get(left.provider) ?? 999) - (order.get(right.provider) ?? 999)
-      || left.rank - right.rank || left.url.localeCompare(right.url))
+    .sort(
+      (left, right) =>
+        (right.score ?? 0) - (left.score ?? 0) ||
+        (order.get(left.provider) ?? 999) - (order.get(right.provider) ?? 999) ||
+        left.rank - right.rank ||
+        left.url.localeCompare(right.url),
+    )
     .slice(0, maxResults)
     .map((result, index) => ({ ...result, rank: index + 1, score: Number((result.score ?? 0).toFixed(6)) }));
 }
 
 function parseDuckDuckGoResponse(text: string): ParsedSearchResult[] {
   let payload: unknown;
-  try { payload = JSON.parse(text) as unknown; }
-  catch { throw new ProviderFailureError({ provider: 'duckduckgo', kind: 'parse', message: 'DuckDuckGo API returned invalid JSON', retryable: true }); }
-  if (!isRecord(payload)) throw new ProviderFailureError({ provider: 'duckduckgo', kind: 'parse', message: 'DuckDuckGo API returned an invalid response', retryable: true });
+  try {
+    payload = JSON.parse(text) as unknown;
+  } catch {
+    throw new ProviderFailureError({ provider: 'duckduckgo', kind: 'parse', message: 'DuckDuckGo API returned invalid JSON', retryable: true });
+  }
+  if (!isRecord(payload))
+    throw new ProviderFailureError({ provider: 'duckduckgo', kind: 'parse', message: 'DuckDuckGo API returned an invalid response', retryable: true });
   const parsed: ParsedSearchResult[] = [];
   const abstract = stringField(payload, 'AbstractText');
   const abstractUrl = stringField(payload, 'AbstractURL');
@@ -559,8 +632,11 @@ function parseDuckDuckGoResponse(text: string): ParsedSearchResult[] {
 
 export function parseSearxngResponse(text: string): { results: ParsedSearchResult[]; failures: SearchProviderFailure[] } {
   let payload: unknown;
-  try { payload = JSON.parse(text) as unknown; }
-  catch { throw new ProviderFailureError({ provider: 'searxng', kind: 'parse', message: 'SearXNG returned invalid JSON', retryable: true }); }
+  try {
+    payload = JSON.parse(text) as unknown;
+  } catch {
+    throw new ProviderFailureError({ provider: 'searxng', kind: 'parse', message: 'SearXNG returned invalid JSON', retryable: true });
+  }
   if (!isRecord(payload) || !Array.isArray(payload.results)) {
     throw new ProviderFailureError({ provider: 'searxng', kind: 'parse', message: 'SearXNG returned an invalid response', retryable: true });
   }
@@ -571,11 +647,16 @@ export function parseSearxngResponse(text: string): { results: ParsedSearchResul
     const url = stringField(item, 'url');
     if (!title || !url) continue;
     const engines = Array.isArray(item.engines)
-      ? item.engines.filter((engine): engine is string => typeof engine === 'string').slice(0, 20).map((engine) => truncate(engine, 100))
+      ? item.engines
+          .filter((engine): engine is string => typeof engine === 'string')
+          .slice(0, 20)
+          .map((engine) => truncate(engine, 100))
       : [];
     const publishedAt = stringField(item, 'publishedDate') || stringField(item, 'published_date');
     results.push({
-      title, url, snippet: stringField(item, 'content'),
+      title,
+      url,
+      snippet: stringField(item, 'content'),
       ...(finiteNumber(item.score) !== undefined ? { providerScore: finiteNumber(item.score) } : {}),
       ...(engines.length > 0 ? { engines } : {}),
       ...(publishedAt ? { publishedAt: truncate(publishedAt, 100) } : {}),
@@ -595,7 +676,9 @@ export function parseSearxngResponse(text: string): { results: ParsedSearchResul
         message = stringField(entry, 'error') || stringField(entry, 'message');
       }
       failures.push({
-        provider: 'searxng', kind: 'transport', retryable: true,
+        provider: 'searxng',
+        kind: 'transport',
+        retryable: true,
         message: truncate(message || 'SearXNG engine did not respond', 500),
         ...(engine ? { engine: truncate(engine, 100) } : {}),
       });
@@ -665,8 +748,11 @@ function providerUrl(provider: SearchProviderName, query: string, searxngUrl?: s
   if (provider === 'google') throw new TendrilError('CONFIGURATION_ERROR', 'Google search must use the Custom Search JSON API');
   if (!searxngUrl) throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl is required for the SearXNG provider');
   let base: URL;
-  try { base = new URL(searxngUrl); }
-  catch (error) { throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl must be a valid URL', { cause: error }); }
+  try {
+    base = new URL(searxngUrl);
+  } catch (error) {
+    throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl must be a valid URL', { cause: error });
+  }
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) {
     throw new TendrilError('CONFIGURATION_ERROR', 'searxngUrl must be an HTTP(S) URL without embedded credentials');
   }
@@ -688,22 +774,30 @@ function normalizeParsedResults(parsed: ParsedSearchResult[], provider: SearchPr
     if (!url || !title || seen.has(url)) continue;
     seen.add(url);
     results.push({
-      rank: results.length + 1, title, url,
-      snippet: truncate(item.snippet.replace(/\s+/g, ' ').trim(), MAX_RESULT_SNIPPET_CHARS), provider,
+      rank: results.length + 1,
+      title,
+      url,
+      snippet: truncate(item.snippet.replace(/\s+/g, ' ').trim(), MAX_RESULT_SNIPPET_CHARS),
+      provider,
       ...(item.providerScore !== undefined ? { providerScore: item.providerScore } : {}),
       ...(item.engines && item.engines.length > 0 ? { engines: [...item.engines] } : {}),
       ...(item.publishedAt ? { publishedAt: item.publishedAt } : {}),
     });
     if (results.length >= MAX_SEARCH_RESULTS) break;
   }
-  if (results.length === 0) throw new ProviderFailureError({ provider, kind: 'empty', message: `${provider} returned no recognizable results`, retryable: true });
-  if (!hasRelevantResults(results, query)) throw new ProviderFailureError({ provider, kind: 'irrelevant', message: `${provider} results did not cover the query terms`, retryable: true });
+  if (results.length === 0)
+    throw new ProviderFailureError({ provider, kind: 'empty', message: `${provider} returned no recognizable results`, retryable: true });
+  if (!hasRelevantResults(results, query))
+    throw new ProviderFailureError({ provider, kind: 'irrelevant', message: `${provider} results did not cover the query terms`, retryable: true });
   return rankResults(results, query);
 }
 
 function canonicalDomain(rawUrl: string): string {
-  try { return new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, ''); }
-  catch { return rawUrl; }
+  try {
+    return new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return rawUrl;
+  }
 }
 
 export function allocateResearchSources(perQuery: Array<{ query: string; results: SearchResult[] }>, maxSources: number): SearchResult[] {
@@ -749,9 +843,16 @@ function evidenceParagraphs(markdown: string, query: string): Array<{ heading?: 
     const text = block.trim();
     if (!text) continue;
     const headingMatch = text.match(/^#{1,6}\s+(.+)$/);
-    if (headingMatch) { heading = truncate(headingMatch[1]!.trim(), 300); continue; }
+    if (headingMatch) {
+      heading = truncate(headingMatch[1]!.trim(), 300);
+      continue;
+    }
     if (text.length < 80) continue;
-    const normalized = new Set(normalizeSearchText(`${heading ?? ''} ${text}`).split(' ').filter(Boolean));
+    const normalized = new Set(
+      normalizeSearchText(`${heading ?? ''} ${text}`)
+        .split(' ')
+        .filter(Boolean),
+    );
     const score = terms.filter((term) => normalized.has(term)).length;
     chunks.push({ ...(heading ? { heading } : {}), text, score, index: index++ });
   }
@@ -833,9 +934,13 @@ export class SearchService {
     }
     const sources = [...sourcesByUrl.values()].slice(0, maxSources);
     const retainedUrls = new Set(sources.map((source) => source.url));
-    const combinedEvidence = [...new Map([...previous.evidence, ...followUp.evidence]
-      .filter((entry) => retainedUrls.has(entry.sourceUrl) || retainedUrls.has(entry.canonicalUrl))
-      .map((entry) => [`${entry.citationId}\0${entry.text}`, entry])).values()];
+    const combinedEvidence = [
+      ...new Map(
+        [...previous.evidence, ...followUp.evidence]
+          .filter((entry) => retainedUrls.has(entry.sourceUrl) || retainedUrls.has(entry.canonicalUrl))
+          .map((entry) => [`${entry.citationId}\0${entry.text}`, entry]),
+      ).values(),
+    ];
     const maxEvidenceChars = Math.max(1, Math.min(options.maxEvidenceChars ?? DEFAULT_EVIDENCE_TOTAL_CHARS, MAX_EVIDENCE_TOTAL_CHARS));
     const evidence = this.boundEvidence(combinedEvidence, maxEvidenceChars);
     const updatedAt = new Date(this.now()).toISOString();
@@ -881,23 +986,43 @@ export class SearchService {
       throwIfAborted(scope.signal);
       const successes: ProviderSearchSuccess[] = [];
       for (const attempt of attempts) {
-        if (attempt.ok) { successes.push(attempt); failures.push(...attempt.payload.failures); }
-        else failures.push(attempt.failure);
+        if (attempt.ok) {
+          successes.push(attempt);
+          failures.push(...attempt.payload.failures);
+        } else failures.push(attempt.failure);
       }
       if (successes.length === 0) {
         const rateLimited = failures.find((failure) => failure.kind === 'rate_limited');
-        if (rateLimited) return {
-          query, provider: rateLimited.provider, providers: [], results: [], failures,
-          rateLimit: rateLimitFromFailure(rateLimited),
-        };
-        throw new TendrilError('SEARCH_FAILED', `All search providers failed: ${failures.map((failure) => `${failure.provider}/${failure.kind}: ${failure.message}`).join('; ')}`, {
-          details: { failures }, retryable: failures.some((failure) => failure.retryable),
-        });
+        if (rateLimited)
+          return {
+            query,
+            provider: rateLimited.provider,
+            providers: [],
+            results: [],
+            failures,
+            rateLimit: rateLimitFromFailure(rateLimited),
+          };
+        throw new TendrilError(
+          'SEARCH_FAILED',
+          `All search providers failed: ${failures.map((failure) => `${failure.provider}/${failure.kind}: ${failure.message}`).join('; ')}`,
+          {
+            details: { failures },
+            retryable: failures.some((failure) => failure.retryable),
+          },
+        );
       }
-      const results = fuseResults(successes.map((success) => ({ provider: success.provider, results: success.payload.results })), query, eligible, maxResults);
+      const results = fuseResults(
+        successes.map((success) => ({ provider: success.provider, results: success.payload.results })),
+        query,
+        eligible,
+        maxResults,
+      );
       if (results.length === 0) throw new TendrilError('SEARCH_FAILED', 'Search providers returned no valid HTTP(S) results', { retryable: true });
       const response: SearchResponse = {
-        query, provider: results[0]!.provider, providers: successes.map((success) => success.provider), results,
+        query,
+        provider: results[0]!.provider,
+        providers: successes.map((success) => success.provider),
+        results,
       };
       if (failures.length > 0) response.failures = failures;
       const rateLimited = failures.find((failure) => failure.kind === 'rate_limited');
@@ -910,41 +1035,59 @@ export class SearchService {
         if (fetched.failures.length > 0) response.evidenceFailures = fetched.failures;
       }
       return response;
-    } finally { operation.complete(); }
+    } finally {
+      operation.complete();
+    }
   }
 
   async research(options: ResearchOptions): Promise<ResearchResponse> {
-    const queries = [...new Set(options.queries.slice(0, 10)
-      .map((query) => query.normalize('NFKC').trim().replace(/\s+/g, ' '))
-      .filter((query) => query.length > 0 && query.length <= MAX_QUERY_CHARS))];
+    const queries = [
+      ...new Set(
+        options.queries
+          .slice(0, 10)
+          .map((query) => query.normalize('NFKC').trim().replace(/\s+/g, ' '))
+          .filter((query) => query.length > 0 && query.length <= MAX_QUERY_CHARS),
+      ),
+    ];
     if (queries.length === 0) throw new TendrilError('SEARCH_FAILED', 'At least one valid research query is required');
     const operation = this.startOperation(options, MAX_SEARCH_TIMEOUT_MS);
     const { scope } = operation;
     const failures: ResearchFailure[] = [];
     try {
-      const searched = await Promise.all(queries.map(async (query) => {
-        try {
-          const response = await this.search({
-            query, maxResults: Math.max(1, Math.min(options.maxResultsPerQuery ?? 5, 10)),
-            signal: scope.signal, deadlineMs: scope.deadlineMs,
-            language: options.language, safeSearch: options.safeSearch, timeRange: options.timeRange,
-          });
-          return {
-            query,
-            results: response.results,
-            failures: (response.failures ?? []).map((failure): ResearchFailure => ({
-              stage: 'search', query, message: failure.message, providerFailure: failure,
-            })),
-          };
-        } catch (error) {
-          throwIfAborted(scope.signal);
-          return {
-            query,
-            results: [],
-            failures: [{ stage: 'search' as const, query, message: error instanceof Error ? error.message : String(error) }],
-          };
-        }
-      }));
+      const searched = await Promise.all(
+        queries.map(async (query) => {
+          try {
+            const response = await this.search({
+              query,
+              maxResults: Math.max(1, Math.min(options.maxResultsPerQuery ?? 5, 10)),
+              signal: scope.signal,
+              deadlineMs: scope.deadlineMs,
+              language: options.language,
+              safeSearch: options.safeSearch,
+              timeRange: options.timeRange,
+            });
+            return {
+              query,
+              results: response.results,
+              failures: (response.failures ?? []).map(
+                (failure): ResearchFailure => ({
+                  stage: 'search',
+                  query,
+                  message: failure.message,
+                  providerFailure: failure,
+                }),
+              ),
+            };
+          } catch (error) {
+            throwIfAborted(scope.signal);
+            return {
+              query,
+              results: [],
+              failures: [{ stage: 'search' as const, query, message: error instanceof Error ? error.message : String(error) }],
+            };
+          }
+        }),
+      );
       throwIfAborted(scope.signal);
       for (const group of searched) failures.push(...group.failures);
       const sources = allocateResearchSources(searched, Math.max(1, Math.min(options.maxSources ?? 10, 30)));
@@ -952,14 +1095,18 @@ export class SearchService {
       const fetched = await this.fetchEvidence(sources, scope.signal, scope.deadlineMs, maxEvidenceChars);
       failures.push(...fetched.failures);
       return { queries, sources, evidence: fetched.evidence, failures };
-    } finally { operation.complete(); }
+    } finally {
+      operation.complete();
+    }
   }
 
   private startOperation(options: { signal?: AbortSignal; deadlineMs?: number; timeoutMs?: number }, defaultTimeoutMs: number): ActiveOperation {
     if (this.closing) throw new TendrilError('CANCELLED', 'Search service is shutting down', { retryable: true });
     const scope = operationScope(options, defaultTimeoutMs);
     let resolveDone!: () => void;
-    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
     let completed = false;
     const operation: ActiveOperation = {
       scope,
@@ -1023,7 +1170,13 @@ export class SearchService {
     return true;
   }
 
-  private async tryProvider(query: string, provider: SearchProviderName, semantics: SearchSemantics, signal: AbortSignal, deadlineMs: number): Promise<ProviderSearchAttempt> {
+  private async tryProvider(
+    query: string,
+    provider: SearchProviderName,
+    semantics: SearchSemantics,
+    signal: AbortSignal,
+    deadlineMs: number,
+  ): Promise<ProviderSearchAttempt> {
     try {
       const payload = await this.getSearchResults(query, provider, semantics, signal, deadlineMs);
       return { ok: true, provider, payload };
@@ -1034,9 +1187,18 @@ export class SearchService {
     }
   }
 
-  private async getSearchResults(query: string, provider: SearchProviderName, semantics: SearchSemantics, signal: AbortSignal, _deadlineMs: number): Promise<ProviderPayload> {
+  private async getSearchResults(
+    query: string,
+    provider: SearchProviderName,
+    semantics: SearchSemantics,
+    signal: AbortSignal,
+    _deadlineMs: number,
+  ): Promise<ProviderPayload> {
     const cached = this.cache.getPayload(query, provider, semantics);
-    if (cached) { this.logger.debug('Search cache hit', { provider, query }); return cached; }
+    if (cached) {
+      this.logger.debug('Search cache hit', { provider, query });
+      return cached;
+    }
     const key = cacheKey(query, provider, semantics);
     let flight = this.singleflight.get(key);
     if (!flight) {
@@ -1045,13 +1207,18 @@ export class SearchService {
       flight = { controller, promise, waiters: 0 };
       this.singleflight.set(key, flight);
       promise.then(
-        () => { if (this.singleflight.get(key) === flight) this.singleflight.delete(key); },
-        () => { if (this.singleflight.get(key) === flight) this.singleflight.delete(key); },
+        () => {
+          if (this.singleflight.get(key) === flight) this.singleflight.delete(key);
+        },
+        () => {
+          if (this.singleflight.get(key) === flight) this.singleflight.delete(key);
+        },
       );
     } else this.logger.debug('Joining in-flight search', { provider, query });
     flight.waiters += 1;
-    try { return await waitForPromise(flight.promise, signal); }
-    finally {
+    try {
+      return await waitForPromise(flight.promise, signal);
+    } finally {
       flight.waiters -= 1;
       if (flight.waiters === 0 && this.singleflight.get(key) === flight) {
         flight.controller.abort(new TendrilError('CANCELLED', 'No search callers remain'));
@@ -1061,14 +1228,22 @@ export class SearchService {
     }
   }
 
-  private async executeProvider(query: string, provider: SearchProviderName, semantics: SearchSemantics, signal: AbortSignal, deadlineMs: number): Promise<ProviderPayload> {
+  private async executeProvider(
+    query: string,
+    provider: SearchProviderName,
+    semantics: SearchSemantics,
+    signal: AbortSignal,
+    deadlineMs: number,
+  ): Promise<ProviderPayload> {
     const circuitFailure = this.beginProviderAttempt(provider);
     if (circuitFailure) throw new ProviderFailureError(circuitFailure);
     const startedAt = this.now();
     try {
       const providerSemaphore = this.providerLimiters.get(provider) ?? new Semaphore(2);
       this.providerLimiters.set(provider, providerSemaphore);
-      const payload = await providerSemaphore.run(signal, () => this.providerLimiter.run(signal, () => this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS, semantics, signal, deadlineMs)));
+      const payload = await providerSemaphore.run(signal, () =>
+        this.providerLimiter.run(signal, () => this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS, semantics, signal, deadlineMs)),
+      );
       const normalized = { results: normalizeParsedResults(payload.results, provider, query), failures: payload.failures };
       this.recordProviderSuccess(provider, Math.max(0, this.now() - startedAt));
       this.cache.setPayload(query, provider, normalized, semantics);
@@ -1084,11 +1259,14 @@ export class SearchService {
     const stats = this.providerStats.get(provider);
     if (!stats?.circuitOpenUntilMs) return undefined;
     const remaining = stats.circuitOpenUntilMs - this.now();
-    if (remaining > 0 || stats.halfOpen) return {
-      provider, kind: 'circuit_open', retryable: true,
-      message: remaining > 0 ? `${provider} circuit is open` : `${provider} half-open probe is already running`,
-      retryAfterMs: Math.max(0, remaining),
-    };
+    if (remaining > 0 || stats.halfOpen)
+      return {
+        provider,
+        kind: 'circuit_open',
+        retryable: true,
+        message: remaining > 0 ? `${provider} circuit is open` : `${provider} half-open probe is already running`,
+        retryAfterMs: Math.max(0, remaining),
+      };
     stats.halfOpen = true;
     return undefined;
   }
@@ -1096,9 +1274,12 @@ export class SearchService {
   private recordProviderSuccess(provider: SearchProviderName, latencyMs: number): void {
     const previous = this.providerStats.get(provider);
     this.providerStats.set(provider, {
-      available: true, attempts: (previous?.attempts ?? 0) + 1,
+      available: true,
+      attempts: (previous?.attempts ?? 0) + 1,
       totalLatencyMs: (previous?.totalLatencyMs ?? 0) + latencyMs,
-      errorCount: previous?.errorCount ?? 0, consecutiveFailures: 0, halfOpen: false,
+      errorCount: previous?.errorCount ?? 0,
+      consecutiveFailures: 0,
+      halfOpen: false,
       lastSuccess: new Date(this.now()).toISOString(),
       ...(previous?.lastFailure ? { lastFailure: previous.lastFailure } : {}),
     });
@@ -1113,13 +1294,19 @@ export class SearchService {
     if (failure.kind === 'circuit_open' || failure.kind === 'unconfigured') return;
     const previous = this.providerStats.get(provider);
     const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
-    const retryAfter = failure.kind === 'rate_limited'
-      ? failure.retryAfterMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS
-      : consecutiveFailures >= PROVIDER_FAILURE_THRESHOLD ? PROVIDER_COOLDOWN_MS : undefined;
+    const retryAfter =
+      failure.kind === 'rate_limited'
+        ? (failure.retryAfterMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS)
+        : consecutiveFailures >= PROVIDER_FAILURE_THRESHOLD
+          ? PROVIDER_COOLDOWN_MS
+          : undefined;
     this.providerStats.set(provider, {
-      available: false, attempts: (previous?.attempts ?? 0) + 1,
+      available: false,
+      attempts: (previous?.attempts ?? 0) + 1,
       totalLatencyMs: (previous?.totalLatencyMs ?? 0) + latencyMs,
-      errorCount: (previous?.errorCount ?? 0) + 1, consecutiveFailures, halfOpen: false,
+      errorCount: (previous?.errorCount ?? 0) + 1,
+      consecutiveFailures,
+      halfOpen: false,
       ...(retryAfter !== undefined ? { circuitOpenUntilMs: this.now() + retryAfter } : {}),
       lastFailure: new Date(this.now()).toISOString(),
       ...(previous?.lastSuccess ? { lastSuccess: previous.lastSuccess } : {}),
@@ -1132,7 +1319,9 @@ export class SearchService {
     if (!stats) return { provider, available: configured, errorCount: 0, consecutiveFailures: 0 };
     const open = stats.circuitOpenUntilMs !== undefined && stats.circuitOpenUntilMs > this.now();
     return {
-      provider, available: configured && stats.available && !open, errorCount: stats.errorCount,
+      provider,
+      available: configured && stats.available && !open,
+      errorCount: stats.errorCount,
       consecutiveFailures: stats.consecutiveFailures,
       averageLatencyMs: stats.attempts > 0 ? stats.totalLatencyMs / stats.attempts : undefined,
       ...(stats.lastSuccess ? { lastSuccess: stats.lastSuccess } : {}),
@@ -1158,29 +1347,50 @@ export class SearchService {
         if (semantics.language) url.searchParams.set('language', semantics.language);
         if (semantics.safeSearch !== undefined) url.searchParams.set('safesearch', String(semantics.safeSearch));
         if (semantics.timeRange) url.searchParams.set('time_range', semantics.timeRange);
-        const response = await session.fetchText(url.toString(), undefined, { signal, deadlineMs, maxBytes: MAX_PROVIDER_BODY_BYTES, accept: 'application/json' });
+        const response = await session.fetchText(url.toString(), undefined, {
+          signal,
+          deadlineMs,
+          maxBytes: MAX_PROVIDER_BODY_BYTES,
+          accept: 'application/json',
+        });
         this.assertProviderStatus(provider, response.status, response.headers);
         return parseSearxngResponse(response.text);
       }
       if (provider === 'google') return { results: await this.searchGoogle(session, query, maxResults, signal, deadlineMs), failures: [] };
       if (provider === 'duckduckgo') return { results: await this.searchDuckDuckGo(session, query, signal, deadlineMs), failures: [] };
       const response = await session.fetchText(providerUrl(provider, query), undefined, {
-        signal, deadlineMs, maxBytes: MAX_PROVIDER_BODY_BYTES, accept: 'application/rss+xml, application/xml, text/xml',
+        signal,
+        deadlineMs,
+        maxBytes: MAX_PROVIDER_BODY_BYTES,
+        accept: 'application/rss+xml, application/xml, text/xml',
       });
       this.assertProviderStatus(provider, response.status, response.headers);
       return { results: parseBingRss(response.text), failures: [] };
     } finally {
-      await this.manager.close(session.id).catch((error) => this.logger.warn('Failed to close search session', { sessionId: session.id, error: String(error) }));
+      await this.manager
+        .close(session.id)
+        .catch((error) => this.logger.warn('Failed to close search session', { sessionId: session.id, error: String(error) }));
     }
   }
 
   private assertProviderStatus(provider: SearchProviderName, status: number | null, headers: Record<string, string>): void {
     if (status === 429) {
       const retry = retryAfterMs(headers, this.now());
-      throw new ProviderFailureError({ provider, kind: 'rate_limited', message: `${provider} returned HTTP 429`, retryable: true, ...(retry !== undefined ? { retryAfterMs: retry } : {}) });
+      throw new ProviderFailureError({
+        provider,
+        kind: 'rate_limited',
+        message: `${provider} returned HTTP 429`,
+        retryable: true,
+        ...(retry !== undefined ? { retryAfterMs: retry } : {}),
+      });
     }
     if (status === null || status < 200 || status >= 300) {
-      throw new ProviderFailureError({ provider, kind: 'transport', message: `${provider} returned HTTP ${status ?? 'unknown'}`, retryable: status === null || status >= 500 });
+      throw new ProviderFailureError({
+        provider,
+        kind: 'transport',
+        message: `${provider} returned HTTP ${status ?? 'unknown'}`,
+        retryable: status === null || status >= 500,
+      });
     }
   }
 
@@ -1199,12 +1409,23 @@ export class SearchService {
       if (failure.kind === 'rate_limited' || failure.kind === 'aborted' || failure.kind === 'timeout') throw error;
       this.logger.warn('DuckDuckGo API failed; falling back to HTML search', { kind: failure.kind, error: failure.message });
     }
-    const response = await session.fetchText(providerUrl('duckduckgo', query), undefined, { signal, deadlineMs, maxBytes: MAX_PROVIDER_BODY_BYTES, accept: 'text/html' });
+    const response = await session.fetchText(providerUrl('duckduckgo', query), undefined, {
+      signal,
+      deadlineMs,
+      maxBytes: MAX_PROVIDER_BODY_BYTES,
+      accept: 'text/html',
+    });
     this.assertProviderStatus('duckduckgo', response.status, response.headers);
     return parseDuckDuckGoHtml(response.text);
   }
 
-  private async searchGoogle(session: TendrilSession, query: string, maxResults: number, signal: AbortSignal, deadlineMs: number): Promise<ParsedSearchResult[]> {
+  private async searchGoogle(
+    session: TendrilSession,
+    query: string,
+    maxResults: number,
+    signal: AbortSignal,
+    deadlineMs: number,
+  ): Promise<ParsedSearchResult[]> {
     const key = this.manager.config.googleSearchApiKey;
     const cx = this.manager.config.googleSearchCx;
     if (!key || !cx) throw new ProviderFailureError({ provider: 'google', kind: 'unconfigured', message: 'Google search is not configured', retryable: false });
@@ -1218,12 +1439,26 @@ export class SearchService {
       url.searchParams.set('q', query);
       url.searchParams.set('num', String(count));
       url.searchParams.set('start', String(parsed.length + 1));
-      const response = await session.fetchText(url.toString(), undefined, { signal, deadlineMs, maxBytes: MAX_PROVIDER_BODY_BYTES, accept: 'application/json' });
+      const response = await session.fetchText(url.toString(), undefined, {
+        signal,
+        deadlineMs,
+        maxBytes: MAX_PROVIDER_BODY_BYTES,
+        accept: 'application/json',
+      });
       this.assertProviderStatus('google', response.status, response.headers);
       let payload: unknown;
-      try { payload = JSON.parse(response.text) as unknown; }
-      catch { throw new ProviderFailureError({ provider: 'google', kind: 'parse', message: 'Google Custom Search API returned invalid JSON', retryable: true }); }
-      if (!isRecord(payload)) throw new ProviderFailureError({ provider: 'google', kind: 'parse', message: 'Google Custom Search API returned an invalid response', retryable: true });
+      try {
+        payload = JSON.parse(response.text) as unknown;
+      } catch {
+        throw new ProviderFailureError({ provider: 'google', kind: 'parse', message: 'Google Custom Search API returned invalid JSON', retryable: true });
+      }
+      if (!isRecord(payload))
+        throw new ProviderFailureError({
+          provider: 'google',
+          kind: 'parse',
+          message: 'Google Custom Search API returned an invalid response',
+          retryable: true,
+        });
       if (!Array.isArray(payload.items)) break;
       const previousLength = parsed.length;
       for (const item of payload.items) {
@@ -1237,79 +1472,107 @@ export class SearchService {
     return parsed;
   }
 
-  private async fetchEvidence(sources: SearchResult[], signal: AbortSignal, deadlineMs: number, maxEvidenceChars: number): Promise<{ evidence: EvidenceChunk[]; failures: ResearchFailure[] }> {
-    const tasks = sources.map((source) => this.evidenceLimiter.run(signal, async () => {
-      let session: TendrilSession | undefined;
-      let abortClose: Promise<void> | undefined;
-      const onAbort = (): void => { if (session && !abortClose) abortClose = session.close().catch(() => undefined); };
-      try {
-        throwIfAborted(signal);
-        session = await this.manager.create();
-        signal.addEventListener('abort', onAbort, { once: true });
-        throwIfAborted(signal);
-        const navigation = await session.navigate({ url: source.url, waitUntil: 'domcontentloaded', signal, deadlineMs });
-        if (navigation.status !== null && navigation.status >= 400) throw new Error(`Evidence source returned HTTP ${navigation.status}`);
-        throwIfAborted(signal);
-        const extracted = await session.extract({ format: 'markdown' });
-        throwIfAborted(signal);
-        if (typeof extracted !== 'string') throw new Error('Evidence extraction did not return Markdown');
-        const documentTruncated = extracted.length > MAX_EVIDENCE_DOCUMENT_CHARS;
-        const markdown = extracted.slice(0, MAX_EVIDENCE_DOCUMENT_CHARS);
-        const query = truncate(source.queries?.[0] ?? '', MAX_QUERY_CHARS);
-        const sourceUrl = truncate(source.url, MAX_RESULT_URL_CHARS);
-        const canonicalUrl = normalizeResultUrl(source.url) ?? sourceUrl;
-        const finalUrl = normalizeResultUrl(navigation.url) ?? canonicalUrl;
-        const title = truncate(navigation.title || source.title, MAX_RESULT_TITLE_CHARS);
-        const rawMimeType = (navigation.mimeType ?? 'text/html')
-          .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        const mimeType = truncate(rawMimeType || 'text/html', MAX_PROVENANCE_MIME_CHARS);
-        const contentHash = hashText(markdown);
-        const retrievedAt = new Date(this.now()).toISOString();
-        let sourceChars = 0;
-        const evidence: EvidenceChunk[] = [];
-        const candidates = evidenceParagraphs(markdown, query);
-        if (candidates.length === 0 && markdown.trim()) candidates.push({ text: markdown.trim(), score: 0, index: 0 });
-        for (const chunk of candidates.slice(0, MAX_EVIDENCE_CHUNKS_PER_SOURCE)) {
-          const remaining = MAX_EVIDENCE_SOURCE_CHARS - sourceChars;
-          if (remaining <= 0) break;
-          const text = truncate(chunk.text, Math.min(2_500, remaining));
-          sourceChars += text.length;
-          const heading = chunk.heading ? truncate(chunk.heading, MAX_PROVENANCE_HEADING_CHARS) : undefined;
-          const citationId = `cite_${hashText(`${canonicalUrl}\0${query}\0${heading ?? ''}\0${text}`).slice(0, 20)}`;
-          evidence.push({
-            citationId, sourceUrl, canonicalUrl, finalUrl, title, text,
-            ...(heading ? { heading } : {}),
-            query, provider: source.provider, rank: source.rank, status: navigation.status,
-            mimeType, retrievedAt, contentHash,
-            ...(documentTruncated || text.length < chunk.text.length ? { truncated: true } : {}),
-          });
-        }
-        return { evidence, failure: undefined };
-      } catch (error) {
-        throwIfAborted(signal);
-        return {
-          evidence: [],
-          failure: { stage: 'evidence' as const, sourceUrl: source.url, query: source.queries?.[0], message: error instanceof Error ? error.message : String(error) },
+  private async fetchEvidence(
+    sources: SearchResult[],
+    signal: AbortSignal,
+    deadlineMs: number,
+    maxEvidenceChars: number,
+  ): Promise<{ evidence: EvidenceChunk[]; failures: ResearchFailure[] }> {
+    const tasks = sources.map((source) =>
+      this.evidenceLimiter.run(signal, async () => {
+        let session: TendrilSession | undefined;
+        let abortClose: Promise<void> | undefined;
+        const onAbort = (): void => {
+          if (session && !abortClose) abortClose = session.close().catch(() => undefined);
         };
-      } finally {
-        signal.removeEventListener('abort', onAbort);
-        if (abortClose) await abortClose;
-        if (session) await this.manager.close(session.id).catch(() => undefined);
-      }
-    }));
+        try {
+          throwIfAborted(signal);
+          session = await this.manager.create();
+          signal.addEventListener('abort', onAbort, { once: true });
+          throwIfAborted(signal);
+          const navigation = await session.navigate({ url: source.url, waitUntil: 'domcontentloaded', signal, deadlineMs });
+          if (navigation.status !== null && navigation.status >= 400) throw new Error(`Evidence source returned HTTP ${navigation.status}`);
+          throwIfAborted(signal);
+          const extracted = await session.extract({ format: 'markdown' });
+          throwIfAborted(signal);
+          if (typeof extracted !== 'string') throw new Error('Evidence extraction did not return Markdown');
+          const documentTruncated = extracted.length > MAX_EVIDENCE_DOCUMENT_CHARS;
+          const markdown = extracted.slice(0, MAX_EVIDENCE_DOCUMENT_CHARS);
+          const query = truncate(source.queries?.[0] ?? '', MAX_QUERY_CHARS);
+          const sourceUrl = truncate(source.url, MAX_RESULT_URL_CHARS);
+          const canonicalUrl = normalizeResultUrl(source.url) ?? sourceUrl;
+          const finalUrl = normalizeResultUrl(navigation.url) ?? canonicalUrl;
+          const title = truncate(navigation.title || source.title, MAX_RESULT_TITLE_CHARS);
+          const rawMimeType = (navigation.mimeType ?? 'text/html')
+            .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const mimeType = truncate(rawMimeType || 'text/html', MAX_PROVENANCE_MIME_CHARS);
+          const contentHash = hashText(markdown);
+          const retrievedAt = new Date(this.now()).toISOString();
+          let sourceChars = 0;
+          const evidence: EvidenceChunk[] = [];
+          const candidates = evidenceParagraphs(markdown, query);
+          if (candidates.length === 0 && markdown.trim()) candidates.push({ text: markdown.trim(), score: 0, index: 0 });
+          for (const chunk of candidates.slice(0, MAX_EVIDENCE_CHUNKS_PER_SOURCE)) {
+            const remaining = MAX_EVIDENCE_SOURCE_CHARS - sourceChars;
+            if (remaining <= 0) break;
+            const text = truncate(chunk.text, Math.min(2_500, remaining));
+            sourceChars += text.length;
+            const heading = chunk.heading ? truncate(chunk.heading, MAX_PROVENANCE_HEADING_CHARS) : undefined;
+            const citationId = `cite_${hashText(`${canonicalUrl}\0${query}\0${heading ?? ''}\0${text}`).slice(0, 20)}`;
+            evidence.push({
+              citationId,
+              sourceUrl,
+              canonicalUrl,
+              finalUrl,
+              title,
+              text,
+              ...(heading ? { heading } : {}),
+              query,
+              provider: source.provider,
+              rank: source.rank,
+              status: navigation.status,
+              mimeType,
+              retrievedAt,
+              contentHash,
+              ...(documentTruncated || text.length < chunk.text.length ? { truncated: true } : {}),
+            });
+          }
+          return { evidence, failure: undefined };
+        } catch (error) {
+          throwIfAborted(signal);
+          return {
+            evidence: [],
+            failure: {
+              stage: 'evidence' as const,
+              sourceUrl: source.url,
+              query: source.queries?.[0],
+              message: error instanceof Error ? error.message : String(error),
+            },
+          };
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+          if (abortClose) await abortClose;
+          if (session) await this.manager.close(session.id).catch(() => undefined);
+        }
+      }),
+    );
     const settled = await Promise.allSettled(tasks);
     throwIfAborted(signal);
-    const fetched = settled.map((item, index) => item.status === 'fulfilled' ? item.value : ({
-      evidence: [],
-      failure: {
-        stage: 'evidence' as const,
-        sourceUrl: sources[index]?.url,
-        query: sources[index]?.queries?.[0],
-        message: item.reason instanceof Error ? item.reason.message : String(item.reason),
-      },
-    }));
+    const fetched = settled.map((item, index) =>
+      item.status === 'fulfilled'
+        ? item.value
+        : {
+            evidence: [],
+            failure: {
+              stage: 'evidence' as const,
+              sourceUrl: sources[index]?.url,
+              query: sources[index]?.queries?.[0],
+              message: item.reason instanceof Error ? item.reason.message : String(item.reason),
+            },
+          },
+    );
     const evidence: EvidenceChunk[] = [];
     const failures: ResearchFailure[] = [];
     let remaining = maxEvidenceChars;
@@ -1317,12 +1580,19 @@ export class SearchService {
       if (item.failure) failures.push(item.failure);
       for (const chunk of item.evidence) {
         if (remaining <= 0) break;
-        if (chunk.text.length <= remaining) { evidence.push(chunk); remaining -= chunk.text.length; continue; }
+        if (chunk.text.length <= remaining) {
+          evidence.push(chunk);
+          remaining -= chunk.text.length;
+          continue;
+        }
         const text = chunk.text.slice(0, remaining);
-        if (text.length > 0) evidence.push({
-          ...chunk, text, truncated: true,
-          citationId: `cite_${hashText(`${chunk.canonicalUrl}\0${chunk.query}\0${chunk.heading ?? ''}\0${text}`).slice(0, 20)}`,
-        });
+        if (text.length > 0)
+          evidence.push({
+            ...chunk,
+            text,
+            truncated: true,
+            citationId: `cite_${hashText(`${chunk.canonicalUrl}\0${chunk.query}\0${chunk.heading ?? ''}\0${text}`).slice(0, 20)}`,
+          });
         remaining = 0;
       }
     }

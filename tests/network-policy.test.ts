@@ -26,14 +26,19 @@ describe('NetworkPolicy', () => {
   it('retains a usable address family when the parallel family has a transient DNS failure', async () => {
     const policy = new NetworkPolicy(
       { blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] },
-      { createResolver: () => ({
-        resolve4: async () => ['203.0.113.10'],
-        resolve6: async () => { throw Object.assign(new Error('temporary AAAA failure'), { code: 'ESERVFAIL' }); },
-        cancel: () => undefined,
-      }) },
+      {
+        createResolver: () => ({
+          resolve4: async () => ['203.0.113.10'],
+          resolve6: async () => {
+            throw Object.assign(new Error('temporary AAAA failure'), { code: 'ESERVFAIL' });
+          },
+          cancel: () => undefined,
+        }),
+      },
     );
     await expect(policy.resolveHost('single-family.example')).resolves.toMatchObject({
-      address: '203.0.113.10', family: 4,
+      address: '203.0.113.10',
+      family: 4,
     });
   });
 
@@ -64,17 +69,18 @@ describe('NetworkPolicy', () => {
     const externalCancel = vi.fn();
     const externalPolicy = new NetworkPolicy(
       { blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] },
-      { createResolver: () => {
-        external.abort();
-        return {
-          resolve4: () => new Promise<string[]>(() => {}),
-          resolve6: () => new Promise<string[]>(() => {}),
-          cancel: externalCancel,
-        };
-      } },
+      {
+        createResolver: () => {
+          external.abort();
+          return {
+            resolve4: () => new Promise<string[]>(() => {}),
+            resolve6: () => new Promise<string[]>(() => {}),
+            cancel: externalCancel,
+          };
+        },
+      },
     );
-    await expect(externalPolicy.resolveHost('registration-race.invalid', external.signal))
-      .rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(externalPolicy.resolveHost('registration-race.invalid', external.signal)).rejects.toMatchObject({ code: 'CANCELLED' });
     expect(externalCancel).toHaveBeenCalledOnce();
 
     let policy!: NetworkPolicy;
@@ -82,14 +88,16 @@ describe('NetworkPolicy', () => {
     const closeCancel = vi.fn();
     policy = new NetworkPolicy(
       { blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] },
-      { createResolver: () => {
-        closing = policy.close();
-        return {
-          resolve4: () => new Promise<string[]>(() => {}),
-          resolve6: () => new Promise<string[]>(() => {}),
-          cancel: closeCancel,
-        };
-      } },
+      {
+        createResolver: () => {
+          closing = policy.close();
+          return {
+            resolve4: () => new Promise<string[]>(() => {}),
+            resolve6: () => new Promise<string[]>(() => {}),
+            cancel: closeCancel,
+          };
+        },
+      },
     );
     await expect(policy.resolveHost('close-registration-race.invalid')).rejects.toMatchObject({ code: 'CANCELLED' });
     await closing;
@@ -99,7 +107,10 @@ describe('NetworkPolicy', () => {
   it('preserves authoritative cancellation and timeout codes when resolver.cancel rejects c-ares work', async () => {
     const makeResolver = () => {
       const rejectors: Array<(error: Error) => void> = [];
-      const pending = () => new Promise<string[]>((_resolve, reject) => { rejectors.push(reject); });
+      const pending = () =>
+        new Promise<string[]>((_resolve, reject) => {
+          rejectors.push(reject);
+        });
       return {
         resolve4: pending,
         resolve6: pending,
@@ -110,10 +121,7 @@ describe('NetworkPolicy', () => {
       };
     };
     const controller = new AbortController();
-    const cancelled = new NetworkPolicy(
-      { blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] },
-      { createResolver: makeResolver },
-    );
+    const cancelled = new NetworkPolicy({ blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] }, { createResolver: makeResolver });
     const external = cancelled.resolveHost('cancel-code.invalid', controller.signal);
     controller.abort();
     await expect(external).rejects.toMatchObject({ code: 'CANCELLED' });

@@ -1,6 +1,6 @@
+import { mkdtemp } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,8 +25,11 @@ describe('CrawlService', () => {
     const service = new CrawlService({} as BrowserManager, new Logger('error'));
     expect(() => service.start({ url: 'ftp://example.com/file' })).toThrow('credential-free HTTP(S)');
     let credentialError = '';
-    try { service.start({ url: 'https://user:do-not-echo@example.com/' }); }
-    catch (error) { credentialError = error instanceof Error ? error.message : String(error); }
+    try {
+      service.start({ url: 'https://user:do-not-echo@example.com/' });
+    } catch (error) {
+      credentialError = error instanceof Error ? error.message : String(error);
+    }
     expect(credentialError).toContain('credential-free HTTP(S)');
     expect(credentialError).not.toContain('do-not-echo');
     expect(() => service.start({ url: 'https://example.com/', maxPages: Number.NaN })).toThrow('finite integer');
@@ -65,10 +68,17 @@ describe('CrawlService', () => {
     await new Promise<void>((resolve) => fixture!.listen(0, '127.0.0.1', () => resolve()));
     const port = (fixture.address() as AddressInfo).port;
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-crawl-'));
-    runtime = await createRuntime(await loadConfig({ overrides: {
-      dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1,
-      blockPrivateNetworks: false, logLevel: 'error',
-    } }));
+    runtime = await createRuntime(
+      await loadConfig({
+        overrides: {
+          dataDir: path.join(root, 'data'),
+          runtimeDir: path.join(root, 'run'),
+          maxSessions: 1,
+          blockPrivateNetworks: false,
+          logLevel: 'error',
+        },
+      }),
+    );
     const job = runtime.crawl.start({ url: `http://127.0.0.1:${port}/`, maxPages: 5, maxDepth: 2 });
     let current = runtime.crawl.get(job.id);
     const deadline = Date.now() + 20_000;
@@ -95,17 +105,22 @@ describe('CrawlService', () => {
     const sessions = new Map<string, TendrilSession>();
     const manager = {
       create: vi.fn(async () => {
-        const id = `fake-${sequence += 1}`;
+        sequence += 1;
+        const id = `fake-${sequence}`;
         const session = {
           id,
-          fetchText: vi.fn(async () => { throw new Error('no robots fixture'); }),
+          fetchText: vi.fn(async () => {
+            throw new Error('no robots fixture');
+          }),
           navigate: vi.fn(async () => ({ status: 200 })),
           extract: vi.fn(async () => ({ title: id, markdown: `body ${id}`, links: [] })),
         } as unknown as TendrilSession;
         sessions.set(id, session);
         return session;
       }),
-      close: vi.fn(async (id: string) => { sessions.delete(id); }),
+      close: vi.fn(async (id: string) => {
+        sessions.delete(id);
+      }),
     } as unknown as BrowserManager;
     const service = new CrawlService(manager, new Logger('error'), { maxJobs: 2, retentionMs: 1_000, now: () => now });
 
@@ -127,9 +142,13 @@ describe('CrawlService', () => {
 
   it('publishes terminal cancellation only after the active session is closed', async () => {
     let rejectNavigation!: (error: Error) => void;
-    const navigation = new Promise<never>((_resolve, reject) => { rejectNavigation = reject; });
+    const navigation = new Promise<never>((_resolve, reject) => {
+      rejectNavigation = reject;
+    });
     let releaseCleanup!: () => void;
-    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const cleanup = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
     const session = {
       id: 'fake-active',
       navigate: vi.fn(() => navigation),
@@ -159,9 +178,13 @@ describe('CrawlService', () => {
 
   it('publishes cancellation cleanup failure instead of swallowing the first close rejection', async () => {
     let rejectNavigation!: (error: Error) => void;
-    const navigation = new Promise<never>((_resolve, reject) => { rejectNavigation = reject; });
+    const navigation = new Promise<never>((_resolve, reject) => {
+      rejectNavigation = reject;
+    });
     let rejectCleanup!: (error: Error) => void;
-    const cleanup = new Promise<void>((_resolve, reject) => { rejectCleanup = reject; });
+    const cleanup = new Promise<void>((_resolve, reject) => {
+      rejectCleanup = reject;
+    });
     const session = {
       id: 'cleanup-failure-session',
       navigate: vi.fn(() => navigation),
@@ -169,7 +192,8 @@ describe('CrawlService', () => {
     } as unknown as TendrilSession;
     const manager = {
       create: vi.fn(async () => session),
-      close: vi.fn()
+      close: vi
+        .fn()
         .mockImplementationOnce(() => cleanup)
         .mockResolvedValue(undefined),
     } as unknown as BrowserManager;
@@ -182,10 +206,12 @@ describe('CrawlService', () => {
     await Promise.resolve();
     rejectCleanup(new Error('injected close cleanup failure'));
 
-    await vi.waitFor(() => expect(service.get(job.id)).toMatchObject({
-      status: 'failed',
-      error: expect.stringContaining('injected close cleanup failure'),
-    }));
+    await vi.waitFor(() =>
+      expect(service.get(job.id)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('injected close cleanup failure'),
+      }),
+    );
     expect(manager.close).toHaveBeenCalledTimes(1);
     await service.close();
   });
@@ -216,9 +242,13 @@ describe('CrawlService', () => {
 
   it('keeps cancellation non-terminal until a pending creation is closed and surfaces late cleanup failure', async () => {
     let resolveCreation!: (session: TendrilSession) => void;
-    const creation = new Promise<TendrilSession>((resolve) => { resolveCreation = resolve; });
+    const creation = new Promise<TendrilSession>((resolve) => {
+      resolveCreation = resolve;
+    });
     let releaseClose!: () => void;
-    const close = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const close = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
     const session = { id: 'late-created-session' } as TendrilSession;
     const manager = {
       create: vi.fn(() => creation),
@@ -236,18 +266,25 @@ describe('CrawlService', () => {
     await service.close();
 
     let resolveFailedCreation!: (created: TendrilSession) => void;
-    const failedCreation = new Promise<TendrilSession>((resolve) => { resolveFailedCreation = resolve; });
+    const failedCreation = new Promise<TendrilSession>((resolve) => {
+      resolveFailedCreation = resolve;
+    });
     const failedManager = {
       create: vi.fn(() => failedCreation),
-      close: vi.fn(async () => { throw new Error('late close failed'); }),
+      close: vi.fn(async () => {
+        throw new Error('late close failed');
+      }),
     } as unknown as BrowserManager;
     const failedService = new CrawlService(failedManager, new Logger('error'), { creationCleanupTimeoutMs: 1_000 });
     const failedJob = failedService.start({ url: 'https://example.com/pending-failure', respectRobots: false });
     failedService.cancel(failedJob.id);
     resolveFailedCreation({ id: 'late-failed-session' } as TendrilSession);
-    await vi.waitFor(() => expect(failedService.get(failedJob.id)).toMatchObject({
-      status: 'failed', error: expect.stringContaining('late close failed'),
-    }));
+    await vi.waitFor(() =>
+      expect(failedService.get(failedJob.id)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('late close failed'),
+      }),
+    );
     await failedService.close();
   });
 
@@ -279,7 +316,9 @@ describe('CrawlService', () => {
       id: 'redirect-robots-session',
       fetchText,
       navigate: vi.fn(async () => ({
-        url: 'https://destination.example/private?secret=destination-secret', title: 'private', status: 200,
+        url: 'https://destination.example/private?secret=destination-secret',
+        title: 'private',
+        status: 200,
       })),
       extract: vi.fn(async () => ({ title: 'must not extract', markdown: 'secret', links: [] })),
     } as unknown as TendrilSession;
@@ -307,7 +346,8 @@ describe('CrawlService', () => {
     const extract = vi.fn();
     const session = {
       id: 'redirect-origin-session',
-      navigate: vi.fn()
+      navigate: vi
+        .fn()
         .mockResolvedValueOnce({ url: 'https://other.example/page', status: 200 })
         .mockRejectedValueOnce(new Error(`navigation failed https://example.com/path?opaque=do-not-echo ${'x'.repeat(3_000)}`)),
       extract,
@@ -381,7 +421,10 @@ describe('CrawlService', () => {
       maxJobMarkdownBytes: 120,
     });
     const job = service.start({
-      url: 'https://example.com/first', maxPages: 2, maxDepth: 1, respectRobots: false,
+      url: 'https://example.com/first',
+      maxPages: 2,
+      maxDepth: 1,
+      respectRobots: false,
     });
     await vi.waitFor(() => expect(service.get(job.id).status).toBe('completed'));
     const results = service.results(job.id, { limit: 10 }).results;

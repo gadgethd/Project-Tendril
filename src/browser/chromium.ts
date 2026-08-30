@@ -1,10 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { access, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { chromium, type Browser, type BrowserContext } from 'playwright';
+import { type Browser, type BrowserContext, chromium } from 'playwright';
 import { TendrilError } from '../errors.js';
-import { ensureDir, pathWithinOwnedRoot, withTimeout, type Logger } from '../util.js';
+import { ensureDir, type Logger, pathWithinOwnedRoot, withTimeout } from '../util.js';
 
 export interface ChromiumProcess {
   browser: Browser;
@@ -31,29 +31,24 @@ async function firstAccessible(paths: string[]): Promise<string | undefined> {
 export async function findChromium(explicit?: string): Promise<string> {
   const candidates: string[] = [];
   if (explicit) candidates.push(explicit);
-  try { candidates.push(chromium.executablePath()); } catch { /* browser not installed */ }
+  try {
+    candidates.push(chromium.executablePath());
+  } catch {
+    /* browser not installed */
+  }
   if (process.platform === 'linux') {
     candidates.push('/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome');
   } else if (process.platform === 'darwin') {
-    candidates.push(
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    );
+    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium');
   } else if (process.platform === 'win32') {
     const roots = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean) as string[];
     for (const root of roots) {
-      candidates.push(
-        path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-        path.join(root, 'Chromium', 'Application', 'chrome.exe'),
-      );
+      candidates.push(path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'), path.join(root, 'Chromium', 'Application', 'chrome.exe'));
     }
   }
   const found = await firstAccessible([...new Set(candidates)]);
   if (!found) {
-    throw new TendrilError(
-      'BROWSER_LAUNCH_FAILED',
-      'No Chromium executable found. Run `tendril install-browser` or set TENDRIL_EXECUTABLE_PATH.',
-    );
+    throw new TendrilError('BROWSER_LAUNCH_FAILED', 'No Chromium executable found. Run `tendril install-browser` or set TENDRIL_EXECUTABLE_PATH.');
   }
   return found;
 }
@@ -62,7 +57,9 @@ async function waitForDevTools(userDataDir: string, child: ChildProcess, timeout
   const activePortPath = pathWithinOwnedRoot(userDataDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   let spawnError: Error | undefined;
-  child.once('error', (error) => { spawnError = error; });
+  child.once('error', (error) => {
+    spawnError = error;
+  });
   while (Date.now() < deadline) {
     if (spawnError) throw spawnError;
     if (child.exitCode !== null) throw new Error(`Chromium exited with code ${child.exitCode}`);
@@ -140,7 +137,7 @@ function defaultPosixGroupAlive(pid: number): boolean {
         try {
           process.kill(pid, 0);
           return true;
-        } catch (leaderError) {
+        } catch (_leaderError) {
           return false;
         }
       }
@@ -196,19 +193,42 @@ export function trackPosixProcessGroup(
       }
       cleanup = (async () => {
         if (!groupWasPinnedAtExit) return;
-        if (await waitForTermination(child, () => !groupAlive(pid), options.gracefulTimeoutMs ?? 3_000, () => joinedDeadline)) return;
+        if (
+          await waitForTermination(
+            child,
+            () => !groupAlive(pid),
+            options.gracefulTimeoutMs ?? 3_000,
+            () => joinedDeadline,
+          )
+        )
+          return;
         try {
           signalGroup(pid, 'SIGTERM');
         } catch (error) {
           if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
         }
-        if (await waitForTermination(child, () => !groupAlive(pid), options.gracefulTimeoutMs ?? 3_000, () => joinedDeadline)) return;
+        if (
+          await waitForTermination(
+            child,
+            () => !groupAlive(pid),
+            options.gracefulTimeoutMs ?? 3_000,
+            () => joinedDeadline,
+          )
+        )
+          return;
         try {
           signalGroup(pid, 'SIGKILL');
         } catch (error) {
           if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
         }
-        if (!await waitForTermination(child, () => !groupAlive(pid), options.forceTimeoutMs ?? 3_000, () => joinedDeadline)) {
+        if (
+          !(await waitForTermination(
+            child,
+            () => !groupAlive(pid),
+            options.forceTimeoutMs ?? 3_000,
+            () => joinedDeadline,
+          ))
+        ) {
           throw new Error(`Chromium process group ${pid} did not exit after child-exit cleanup`);
         }
       })();
@@ -216,7 +236,9 @@ export function trackPosixProcessGroup(
     }
     return cleanup;
   };
-  child.once('exit', () => { void begin(); });
+  child.once('exit', () => {
+    void begin();
+  });
   if (childHasExited(child)) void begin();
   return begin;
 }
@@ -249,10 +271,10 @@ export async function runBoundedHelper(
     let settled = false;
     let terminationTimer: NodeJS.Timeout | undefined;
     const maximumOutputBytes = options.maxOutputBytes ?? 4 * 1024 * 1024;
-    const postKillJoinTimeoutMs = Math.max(10, Math.min(
-      options.postKillJoinTimeoutMs ?? Math.max(25, Math.floor(options.timeoutMs / 4)),
-      Math.max(10, options.timeoutMs - 1),
-    ));
+    const postKillJoinTimeoutMs = Math.max(
+      10,
+      Math.min(options.postKillJoinTimeoutMs ?? Math.max(25, Math.floor(options.timeoutMs / 4)), Math.max(10, options.timeoutMs - 1)),
+    );
     const operationTimeoutMs = Math.max(1, options.timeoutMs - postKillJoinTimeoutMs);
     const finish = (error?: Error, value?: string): void => {
       if (settled) return;
@@ -270,10 +292,7 @@ export async function runBoundedHelper(
         helper.stdout?.destroy();
         helper.stderr?.destroy();
         helper.unref();
-        finish(new AggregateError(
-          [error],
-          `${command} did not report exit after forced helper termination`,
-        ));
+        finish(new AggregateError([error], `${command} did not report exit after forced helper termination`));
       }, postKillJoinTimeoutMs);
     };
     helper.stdout.on('data', (chunk: Buffer) => {
@@ -303,11 +322,7 @@ async function defaultTaskkill(pid: number, timeoutMs: number): Promise<void> {
 
 async function taskkillWindowsPid(pid: number, options: ProcessTerminationOptions, timeoutMs: number): Promise<void> {
   if (options.taskkill) {
-    await withTimeout(
-      options.taskkill(pid),
-      timeoutMs,
-      `Windows Chromium process-tree termination for PID ${pid}`,
-    );
+    await withTimeout(options.taskkill(pid), timeoutMs, `Windows Chromium process-tree termination for PID ${pid}`);
   } else {
     await defaultTaskkill(pid, timeoutMs);
   }
@@ -319,13 +334,10 @@ export const WINDOWS_PROCESS_LIST_SCRIPT = [
 ].join('; ');
 
 async function defaultWindowsProcessList(timeoutMs: number): Promise<WindowsProcessRecord[]> {
-  const output = await runBoundedHelper(
-    'powershell.exe',
-    [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_LIST_SCRIPT,
-    ],
-    { timeoutMs, maxOutputBytes: 4 * 1024 * 1024 },
-  );
+  const output = await runBoundedHelper('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_LIST_SCRIPT], {
+    timeoutMs,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
   const parsed = JSON.parse(output) as unknown;
   const records = Array.isArray(parsed) ? parsed : [parsed];
   if (records.length > 65_536) throw new Error('Windows process enumeration returned too many records');
@@ -354,22 +366,14 @@ function windowsCreationTime(record: WindowsProcessRecord): number {
   return value;
 }
 
-export function captureWindowsProcessTree(
-  rootPid: number,
-  processes: WindowsProcessRecord[],
-  expectedRoot?: WindowsProcessRecord,
-): WindowsProcessTreeSnapshot {
+export function captureWindowsProcessTree(rootPid: number, processes: WindowsProcessRecord[], expectedRoot?: WindowsProcessRecord): WindowsProcessTreeSnapshot {
   if (!Number.isSafeInteger(rootPid) || rootPid <= 0) throw new Error('Cannot capture a Windows process tree for an invalid PID');
   if (processes.length > 65_536) throw new Error('Windows process enumeration returned too many records');
   const byPid = new Map<number, WindowsProcessRecord>();
   const creationTimes = new Map<number, number>();
   const childrenByParent = new Map<number, WindowsProcessRecord[]>();
   for (const record of processes) {
-    if (
-      !Number.isSafeInteger(record.pid) || record.pid <= 0
-      || !Number.isSafeInteger(record.parentPid) || record.parentPid < 0
-      || !record.creationDate
-    ) {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isSafeInteger(record.parentPid) || record.parentPid < 0 || !record.creationDate) {
       throw new Error('Windows process enumeration returned an invalid process identity');
     }
     if (byPid.has(record.pid)) throw new Error(`Windows process enumeration returned duplicate PID ${record.pid}`);
@@ -403,10 +407,7 @@ export function captureWindowsProcessTree(
   return { root, descendants };
 }
 
-function windowsTreeSurvivors(
-  snapshot: WindowsProcessTreeSnapshot,
-  processes: WindowsProcessRecord[],
-): WindowsProcessRecord[] {
+function windowsTreeSurvivors(snapshot: WindowsProcessTreeSnapshot, processes: WindowsProcessRecord[]): WindowsProcessRecord[] {
   const current = new Set(processes.map(windowsProcessKey));
   return [snapshot.root, ...snapshot.descendants].filter((record) => current.has(windowsProcessKey(record)));
 }
@@ -431,8 +432,7 @@ export function captureExitedWindowsProcessTree(
   const descendants = new Map<string, WindowsProcessRecord>();
   for (const record of launchSnapshot.descendants) descendants.set(windowsProcessKey(record), record);
   const currentRoot = byPid.get(launchSnapshot.root.pid);
-  const rootIdentityMatches = currentRoot !== undefined
-    && windowsProcessKey(currentRoot) === windowsProcessKey(launchSnapshot.root);
+  const rootIdentityMatches = currentRoot !== undefined && windowsProcessKey(currentRoot) === windowsProcessKey(launchSnapshot.root);
   // Once the launch root is absent or its numeric PID belongs to another
   // process, current children of that PID cannot be attributed to Chromium.
   const queue: WindowsProcessRecord[] = rootIdentityMatches ? [launchSnapshot.root] : [];
@@ -511,8 +511,12 @@ export function trackWindowsProcessTree(
     return cleanup;
   };
   const join = begin as WindowsExitCleanup;
-  join.markVerified = () => { externallyVerified = true; };
-  child.once('exit', () => { void begin(); });
+  join.markVerified = () => {
+    externallyVerified = true;
+  };
+  child.once('exit', () => {
+    void begin();
+  });
   if (childHasExited(child)) void begin();
   return join;
 }
@@ -537,16 +541,9 @@ export async function captureWindowsLaunchProcessTree(
   return captureWindowsProcessTree(pid, processes);
 }
 
-async function forceWindowsProcessTree(
-  child: ChildProcess,
-  snapshot: WindowsProcessTreeSnapshot,
-  options: ProcessTerminationOptions,
-): Promise<void> {
+async function forceWindowsProcessTree(child: ChildProcess, snapshot: WindowsProcessTreeSnapshot, options: ProcessTerminationOptions): Promise<void> {
   const forceTimeoutMs = options.forceTimeoutMs ?? 3_000;
-  const deadline = Math.min(
-    Date.now() + forceTimeoutMs,
-    options.cleanupDeadline ?? Number.POSITIVE_INFINITY,
-  );
+  const deadline = Math.min(Date.now() + forceTimeoutMs, options.cleanupDeadline ?? Number.POSITIVE_INFINITY);
   const remaining = (stage: string): number => {
     const value = deadline - Date.now();
     if (value <= 0) throw new Error(`Windows Chromium ${stage} exceeded the force-cleanup deadline`);
@@ -570,13 +567,10 @@ async function forceWindowsProcessTree(
   if (taskkillFailures.length) {
     throw new AggregateError(taskkillFailures, 'One or more Windows Chromium process-tree roots failed to terminate');
   }
-  if (!childHasExited(child) && !await waitForTermination(child, () => childHasExited(child), remaining('main-process exit'))) {
+  if (!childHasExited(child) && !(await waitForTermination(child, () => childHasExited(child), remaining('main-process exit')))) {
     throw new Error(`Chromium main process ${snapshot.root.pid} did not report exit after taskkill`);
   }
-  const remainingProcesses = windowsTreeSurvivors(
-    snapshot,
-    await listWindowsProcesses(options, remaining('survivor verification')),
-  );
+  const remainingProcesses = windowsTreeSurvivors(snapshot, await listWindowsProcesses(options, remaining('survivor verification')));
   if (remainingProcesses.length) {
     throw new Error(`Chromium process tree still has ${remainingProcesses.length} verified survivor(s) after taskkill`);
   }
@@ -598,12 +592,7 @@ async function requestChromiumShutdown(browser: Pick<Browser, 'close'> & Partial
   await browser.close();
 }
 
-async function waitForTermination(
-  child: ChildProcess,
-  terminated: () => boolean,
-  timeoutMs: number,
-  joinedDeadline?: () => number,
-): Promise<boolean> {
+async function waitForTermination(child: ChildProcess, terminated: () => boolean, timeoutMs: number, joinedDeadline?: () => number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   return new Promise<boolean>((resolve, reject) => {
     let timer: NodeJS.Timeout | undefined;
@@ -618,8 +607,14 @@ async function waitForTermination(
     const check = (): void => {
       if (settled) return;
       try {
-        if (terminated()) { finish(true); return; }
-        if (Date.now() >= Math.min(deadline, joinedDeadline?.() ?? Number.POSITIVE_INFINITY)) { finish(false); return; }
+        if (terminated()) {
+          finish(true);
+          return;
+        }
+        if (Date.now() >= Math.min(deadline, joinedDeadline?.() ?? Number.POSITIVE_INFINITY)) {
+          finish(false);
+          return;
+        }
         if (timer) clearTimeout(timer);
         timer = setTimeout(check, 25);
         // Process-tree verification is part of shutdown correctness, so this poller
@@ -644,7 +639,14 @@ export async function terminateProcessTree(child: ChildProcess, options: Process
   if (pid === undefined) {
     if (childHasExited(child)) return;
     child.kill('SIGKILL');
-    if (!await waitForTermination(child, () => childHasExited(child), forceTimeoutMs(), () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY)) {
+    if (
+      !(await waitForTermination(
+        child,
+        () => childHasExited(child),
+        forceTimeoutMs(),
+        () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY,
+      ))
+    ) {
       throw new Error('Chromium process exit could not be verified after SIGKILL');
     }
     return;
@@ -652,34 +654,29 @@ export async function terminateProcessTree(child: ChildProcess, options: Process
 
   if (platform === 'win32') {
     if (childHasExited(child) && options.windowsExitCleanup) {
-      await withTimeout(
-        options.windowsExitCleanup(options.cleanupDeadline),
-        forceTimeoutMs(),
-        'Windows Chromium child-exit cleanup',
-      );
+      await withTimeout(options.windowsExitCleanup(options.cleanupDeadline), forceTimeoutMs(), 'Windows Chromium child-exit cleanup');
       return;
     }
     if (!options.windowsRootIdentity) {
       if (childHasExited(child)) throw new Error('Windows Chromium launch-time process identity is unavailable after main-process exit');
       await taskkillWindowsPid(pid, options, forceTimeoutMs());
-      if (!await waitForTermination(child, () => childHasExited(child), forceTimeoutMs(), () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY)) {
+      if (
+        !(await waitForTermination(
+          child,
+          () => childHasExited(child),
+          forceTimeoutMs(),
+          () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY,
+        ))
+      ) {
         throw new Error(`Chromium main process ${pid} did not report exit after identity-safe immediate taskkill`);
       }
       throw new Error('Windows Chromium descendants were terminated but could not be identity-verified');
     }
-    const snapshot = captureWindowsProcessTree(
-      pid,
-      await listWindowsProcesses(options, forceTimeoutMs()),
-      options.windowsRootIdentity,
-    );
+    const snapshot = captureWindowsProcessTree(pid, await listWindowsProcesses(options, forceTimeoutMs()), options.windowsRootIdentity);
     await forceWindowsProcessTree(child, snapshot, options);
     options.windowsExitCleanup?.markVerified();
     if (options.windowsExitCleanup) {
-      await withTimeout(
-        options.windowsExitCleanup(options.cleanupDeadline),
-        forceTimeoutMs(),
-        'Windows Chromium exit-tracker join',
-      ).catch(() => undefined);
+      await withTimeout(options.windowsExitCleanup(options.cleanupDeadline), forceTimeoutMs(), 'Windows Chromium exit-tracker join').catch(() => undefined);
     }
     return;
   }
@@ -712,7 +709,7 @@ export async function terminateProcessTree(child: ChildProcess, options: Process
   } catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
   }
-  if (!await waitForTermination(child, terminated, forceTimeoutMs(), () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY)) {
+  if (!(await waitForTermination(child, terminated, forceTimeoutMs(), () => options.cleanupDeadline ?? Number.POSITIVE_INFINITY))) {
     throw new Error(`Chromium process group ${pid} did not exit after SIGKILL`);
   }
 }
@@ -765,14 +762,18 @@ export async function closeChromiumResources(
     if (pid === undefined) {
       try {
         await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser close'), 'Chromium browser close');
-      } catch { /* force cleanup below */ }
+      } catch {
+        /* force cleanup below */
+      }
       await terminateProcessTree(child, scopedOptions);
       return;
     }
     if (childHasExited(child) && scopedOptions.windowsExitCleanup) {
       try {
         await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser disconnect'), 'Chromium browser disconnect');
-      } catch { /* the child-exit tracker is authoritative */ }
+      } catch {
+        /* the child-exit tracker is authoritative */
+      }
       await withTimeout(
         scopedOptions.windowsExitCleanup(cleanupDeadline),
         stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
@@ -780,34 +781,59 @@ export async function closeChromiumResources(
       );
       return;
     }
+    if (!options.windowsRootIdentity) {
+      // Launch-time identity is unavailable (cold/slow Windows runner):
+      // terminate child-anchored instead. Every descendant of the child
+      // belongs to this userDataDir-scoped launch, so this is safe without a
+      // snapshot. The close only fails if the main process genuinely cannot
+      // be killed.
+      try {
+        await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser close'), 'Chromium browser close');
+      } catch {
+        /* force cleanup below */
+      }
+      if (!childHasExited(child)) {
+        try {
+          await taskkillWindowsPid(pid, scopedOptions, stageTimeout(forceTimeoutMs, 'identity-safe immediate taskkill'));
+          if (
+            !(await waitForTermination(
+              child,
+              () => childHasExited(child),
+              stageTimeout(forceTimeoutMs, 'main-process exit verification'),
+              () => cleanupDeadline,
+            ))
+          ) {
+            throw new Error(`Chromium main process ${pid} did not report exit after identity-safe immediate taskkill`);
+          }
+        } catch (terminationError) {
+          throw new AggregateError([terminationError], 'Windows Chromium identity capture and immediate cleanup failed');
+        }
+      }
+      if (scopedOptions.windowsExitCleanup) {
+        await withTimeout(
+          scopedOptions.windowsExitCleanup(cleanupDeadline),
+          stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
+          'Windows Chromium child-exit cleanup',
+        ).catch(() => undefined);
+        scopedOptions.windowsExitCleanup?.markVerified();
+      }
+      return;
+    }
     let snapshot: WindowsProcessTreeSnapshot;
     try {
-      if (!options.windowsRootIdentity) throw new Error('Windows Chromium launch-time process identity is unavailable');
       snapshot = captureWindowsProcessTree(
         pid,
         await listWindowsProcesses(scopedOptions, stageTimeout(forceTimeoutMs, 'Windows process enumeration')),
         options.windowsRootIdentity,
       );
     } catch (error) {
-      // Give Chromium a chance to flush its profile even though tree verification is
-      // unavailable, then fail closed so the manager retains the profile lease.
+      // Identity is present but the launch-time tree capture failed (PID
+      // reuse or enumeration timeout): fail closed WITHOUT taskkill, since
+      // taskkilling a reused PID could terminate an unrelated process.
       try {
         await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser close'), 'Chromium browser close');
-      } catch { /* retain the identity-capture failure below */ }
-      if (!childHasExited(child)) {
-        try {
-          await taskkillWindowsPid(pid, scopedOptions, stageTimeout(forceTimeoutMs, 'identity-safe immediate taskkill'));
-          if (!await waitForTermination(
-            child,
-            () => childHasExited(child),
-            stageTimeout(forceTimeoutMs, 'main-process exit verification'),
-            () => cleanupDeadline,
-          )) {
-            throw new Error(`Chromium main process ${pid} did not report exit after identity-safe immediate taskkill`);
-          }
-        } catch (terminationError) {
-          throw new AggregateError([error, terminationError], 'Windows Chromium identity capture and immediate cleanup failed');
-        }
+      } catch {
+        /* retain the identity-capture failure below */
       }
       throw error;
     }
@@ -833,10 +859,7 @@ export async function closeChromiumResources(
       );
       return;
     }
-    const survivors = windowsTreeSurvivors(
-      snapshot,
-      await listWindowsProcesses(scopedOptions, stageTimeout(forceTimeoutMs, 'Windows survivor enumeration')),
-    );
+    const survivors = windowsTreeSurvivors(snapshot, await listWindowsProcesses(scopedOptions, stageTimeout(forceTimeoutMs, 'Windows survivor enumeration')));
     if (childHasExited(child) && survivors.length === 0) return;
     await forceWindowsProcessTree(child, snapshot, scopedOptions);
     scopedOptions.windowsExitCleanup?.markVerified();
@@ -932,13 +955,10 @@ export async function launchChromium(options: {
       XDG_CACHE_HOME: browserCacheHome,
     },
   });
-  const windowsLaunchSnapshotPromise = process.platform === 'win32'
-    ? captureWindowsLaunchProcessTree(child, () => listWindowsProcesses({}, 12_000))
-    : undefined;
+  const windowsLaunchSnapshotPromise =
+    process.platform === 'win32' ? captureWindowsLaunchProcessTree(child, () => listWindowsProcesses({}, 12_000)) : undefined;
   const windowsRootIdentityPromise = windowsLaunchSnapshotPromise?.then((snapshot) => snapshot.root);
-  const windowsExitCleanup = windowsLaunchSnapshotPromise
-    ? trackWindowsProcessTree(child, windowsLaunchSnapshotPromise)
-    : undefined;
+  const windowsExitCleanup = windowsLaunchSnapshotPromise ? trackWindowsProcessTree(child, windowsLaunchSnapshotPromise) : undefined;
   void windowsLaunchSnapshotPromise?.catch(() => undefined);
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => {
@@ -946,9 +966,7 @@ export async function launchChromium(options: {
     if (stderr.join('').length > 16_384) stderr.shift();
   });
   const posixExitCleanup = process.platform === 'win32' ? undefined : trackPosixProcessGroup(child);
-  let terminationOptions: ProcessTerminationOptions = posixExitCleanup
-    ? { posixExitCleanup }
-    : windowsExitCleanup ? { windowsExitCleanup } : {};
+  let terminationOptions: ProcessTerminationOptions = posixExitCleanup ? { posixExitCleanup } : windowsExitCleanup ? { windowsExitCleanup } : {};
   void windowsRootIdentityPromise?.catch(() => undefined);
 
   try {

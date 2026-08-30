@@ -1,6 +1,6 @@
+import { CrawlService } from './browser/crawl.js';
 import { BrowserManager } from './browser/manager.js';
 import { SearchService } from './browser/search.js';
-import { CrawlService } from './browser/crawl.js';
 import type { TendrilConfig } from './types.js';
 import { Logger } from './util.js';
 

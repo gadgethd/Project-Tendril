@@ -60,9 +60,17 @@ export async function runDoctor(config: TendrilConfig, environment: NodeJS.Proce
   const noSandboxOverride = environment.TENDRIL_ALLOW_NO_SANDBOX === 'true';
   const runningAsRoot = process.getuid?.() === 0;
   if (noSandboxOverride) {
-    checks.push({ check: 'Chromium sandbox launch', ok: false, detail: 'TENDRIL_ALLOW_NO_SANDBOX=true disables the browser sandbox and is not production-ready' });
+    checks.push({
+      check: 'Chromium sandbox launch',
+      ok: false,
+      detail: 'TENDRIL_ALLOW_NO_SANDBOX=true disables the browser sandbox and is not production-ready',
+    });
   } else if (runningAsRoot) {
-    checks.push({ check: 'Chromium sandbox launch', ok: false, detail: 'Running as root is refused; use the non-root container user or an unprivileged account' });
+    checks.push({
+      check: 'Chromium sandbox launch',
+      ok: false,
+      detail: 'Running as root is refused; use the non-root container user or an unprivileged account',
+    });
   } else if (!executable) {
     checks.push({ check: 'Chromium sandbox launch', ok: false, detail: 'Chromium binary check failed' });
   } else {

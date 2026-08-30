@@ -55,31 +55,47 @@ export const DEFAULT_CONFIG: TendrilConfig = {
 };
 
 const boundedString = (label: string, maximum = 4096) => z.string().trim().min(1, `${label} must not be empty`).max(maximum);
-const secretString = (label: string, maximum = 4096) => z.string().min(1, `${label} must not be empty`).max(maximum)
-  .refine((value) => value === value.trim(), `${label} must not start or end with whitespace`);
-const uniqueStringList = (label: string, maximum: number) => z.array(boundedString(`${label} entry`)).max(maximum).superRefine((values, context) => {
-  const seen = new Set<string>();
-  for (const [index, value] of values.entries()) {
-    if (seen.has(value)) context.addIssue({ code: 'custom', path: [index], message: `${label} entries must be unique` });
-    seen.add(value);
-  }
-});
+const secretString = (label: string, maximum = 4096) =>
+  z
+    .string()
+    .min(1, `${label} must not be empty`)
+    .max(maximum)
+    .refine((value) => value === value.trim(), `${label} must not start or end with whitespace`);
+const uniqueStringList = (label: string, maximum: number) =>
+  z
+    .array(boundedString(`${label} entry`))
+    .max(maximum)
+    .superRefine((values, context) => {
+      const seen = new Set<string>();
+      for (const [index, value] of values.entries()) {
+        if (seen.has(value)) context.addIssue({ code: 'custom', path: [index], message: `${label} entries must be unique` });
+        seen.add(value);
+      }
+    });
 const provider = z.enum(['duckduckgo', 'bing', 'google', 'searxng']);
-const providers = z.array(provider).min(1).max(4).superRefine((values, context) => {
-  const seen = new Set<SearchProviderName>();
-  for (const [index, value] of values.entries()) {
-    if (seen.has(value)) context.addIssue({ code: 'custom', path: [index], message: 'searchProviders entries must be unique' });
-    seen.add(value);
-  }
-});
-const optionalUrl = z.string().trim().url()
+const providers = z
+  .array(provider)
+  .min(1)
+  .max(4)
+  .superRefine((values, context) => {
+    const seen = new Set<SearchProviderName>();
+    for (const [index, value] of values.entries()) {
+      if (seen.has(value)) context.addIssue({ code: 'custom', path: [index], message: 'searchProviders entries must be unique' });
+      seen.add(value);
+    }
+  });
+const optionalUrl = z
+  .string()
+  .trim()
+  .url()
   .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), 'must use http or https')
   .refine((value) => !new URL(value).username && !new URL(value).password, 'must not embed credentials')
   .optional();
-const ownedDirectory = (label: string) => boundedString(label).refine((value) => {
-  const resolved = path.resolve(value);
-  return resolved !== path.parse(resolved).root;
-}, `${label} must not be a filesystem root`);
+const ownedDirectory = (label: string) =>
+  boundedString(label).refine((value) => {
+    const resolved = path.resolve(value);
+    return resolved !== path.parse(resolved).root;
+  }, `${label} must not be a filesystem root`);
 
 const configObject = z.strictObject({
   host: boundedString('host', 255).regex(/^[^\s/]+$/, 'host must not contain whitespace or a path'),
@@ -87,11 +103,27 @@ const configObject = z.strictObject({
   headless: z.boolean(),
   executablePath: boundedString('executablePath').optional(),
   maxSessions: z.number().int().min(1).max(64),
-  sessionIdleMs: z.number().int().min(1_000).max(7 * 24 * 60 * 60_000),
-  actionTimeoutMs: z.number().int().min(100).max(10 * 60_000),
-  navigationTimeoutMs: z.number().int().min(100).max(10 * 60_000),
+  sessionIdleMs: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(7 * 24 * 60 * 60_000),
+  actionTimeoutMs: z
+    .number()
+    .int()
+    .min(100)
+    .max(10 * 60_000),
+  navigationTimeoutMs: z
+    .number()
+    .int()
+    .min(100)
+    .max(10 * 60_000),
   maxSnapshotChars: z.number().int().min(1_000).max(2_000_000),
-  maxResponseBodyBytes: z.number().int().min(1_024).max(100 * 1024 * 1024),
+  maxResponseBodyBytes: z
+    .number()
+    .int()
+    .min(1_024)
+    .max(100 * 1024 * 1024),
   blockPrivateNetworks: z.boolean(),
   allowedHosts: uniqueStringList('allowedHosts', 256),
   blockedHosts: uniqueStringList('blockedHosts', 256),
@@ -147,7 +179,10 @@ function envNumber(value: string | undefined, name: string): number | undefined 
 }
 
 function envList(value: string | undefined): string[] | undefined {
-  return value?.split(',').map((item) => item.trim()).filter(Boolean);
+  return value
+    ?.split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function isMissingFile(error: unknown): boolean {

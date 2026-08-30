@@ -151,20 +151,23 @@ export class NetworkPolicy {
     let rejectCancellation!: (error: Error) => void;
     let settled = false;
     let cancellationIssued = false;
-    const cancellation = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
     const cancel = (reason: Error = this.abortError(`DNS lookup cancelled for ${hostname}`)): void => {
       if (settled || cancellationIssued) return;
       cancellationIssued = true;
       rejectCancellation(reason);
-      try { resolver.cancel(); } catch { /* the rejection above is authoritative */ }
+      try {
+        resolver.cancel();
+      } catch {
+        /* the rejection above is authoritative */
+      }
     };
     const onExternalAbort = (): void => cancel();
     const onPolicyClose = (): void => cancel(this.abortError('Network policy is closing'));
 
-    const resolution = Promise.allSettled([
-      resolver.resolve4(hostname),
-      resolver.resolve6(hostname),
-    ]).then((families) => {
+    const resolution = Promise.allSettled([resolver.resolve4(hostname), resolver.resolve6(hostname)]).then((families) => {
       const addresses: Array<{ address: string; family: 4 | 6 }> = [];
       const failures: unknown[] = [];
       for (const [index, family] of families.entries()) {
@@ -188,9 +191,7 @@ export class NetworkPolicy {
     this.activeLookups.add(active);
     signal?.addEventListener('abort', onExternalAbort, { once: true });
     this.closingController.signal.addEventListener('abort', onPolicyClose, { once: true });
-    const timer = setTimeout(() => cancel(new TendrilError(
-      'TIMEOUT', `DNS lookup timed out for ${hostname}`, { retryable: true },
-    )), this.lookupTimeoutMs);
+    const timer = setTimeout(() => cancel(new TendrilError('TIMEOUT', `DNS lookup timed out for ${hostname}`, { retryable: true })), this.lookupTimeoutMs);
     // AbortSignal does not replay an abort to listeners registered afterward.
     // Recheck both signals only after this lookup is in the joinable active set.
     if (signal?.aborted) onExternalAbort();

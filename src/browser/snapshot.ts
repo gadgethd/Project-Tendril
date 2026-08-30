@@ -1,7 +1,7 @@
 import type { ElementHandle, Frame, JSHandle, Page } from 'playwright';
 import { TendrilError } from '../errors.js';
-import { newId, redactUrl } from '../util.js';
 import type { ElementRef, SnapshotDiffSummary, SnapshotNode, SnapshotResult } from '../types.js';
+import { newId, redactUrl } from '../util.js';
 import { detectInjectionWarnings, REDACTED_VALUE, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
 
 export interface ElementTarget {
@@ -22,10 +22,32 @@ export const ELEMENT_FINGERPRINT_OPTIONS = Object.freeze({
   maxComponentChars: 120,
   maxFingerprintChars: 64,
   attributes: Object.freeze([
-    'type', 'id', 'name', 'href', 'src', 'role', 'title', 'alt', 'placeholder', 'tabindex',
-    'aria-label', 'aria-labelledby', 'aria-description', 'aria-describedby', 'aria-disabled', 'aria-hidden',
-    'aria-checked', 'aria-pressed', 'aria-expanded', 'aria-selected', 'aria-readonly', 'aria-required',
-    'contenteditable', 'formaction', 'formmethod', 'target',
+    'type',
+    'id',
+    'name',
+    'href',
+    'src',
+    'role',
+    'title',
+    'alt',
+    'placeholder',
+    'tabindex',
+    'aria-label',
+    'aria-labelledby',
+    'aria-description',
+    'aria-describedby',
+    'aria-disabled',
+    'aria-hidden',
+    'aria-checked',
+    'aria-pressed',
+    'aria-expanded',
+    'aria-selected',
+    'aria-readonly',
+    'aria-required',
+    'contenteditable',
+    'formaction',
+    'formmethod',
+    'target',
   ]),
   referenceAttributes: Object.freeze(['aria-labelledby', 'aria-describedby']),
 });
@@ -108,7 +130,9 @@ function formatNodeLine(node: SnapshotNode, depth: number, scopedRefs: boolean):
     node.readonly ? 'readonly' : '',
     node.required ? 'required' : '',
     node.level ? `level=${node.level}` : '',
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
   const essentialSuffix = essentialAttributes ? ` ${essentialAttributes}` : '';
   let line = `${indent}- ${role}`;
   const appendJson = (prefix: string, value: string | undefined, preferredChars: number): void => {
@@ -129,7 +153,10 @@ function formatNodeLine(node: SnapshotNode, depth: number, scopedRefs: boolean):
 }
 
 function formatNodesBounded(
-  nodes: SnapshotNode[], scopedRefs: boolean, maxChars: number, maxLines = Number.POSITIVE_INFINITY,
+  nodes: SnapshotNode[],
+  scopedRefs: boolean,
+  maxChars: number,
+  maxLines = Number.POSITIVE_INFINITY,
 ): { content: string; lineCount: number; truncated: boolean } {
   const lines: string[] = [];
   const pending = nodes.map((node) => ({ node, depth: 0 })).reverse();
@@ -235,322 +262,386 @@ interface FrameSnapshot {
 }
 
 async function snapshotFrame(frame: Frame, maxDomNodes: number, maxRefs: number, maxSemanticChars: number): Promise<FrameSnapshot> {
-  const payload = await frame.locator('body').evaluateHandle((body, snapshotOptions) => {
-    const { redactedValue, fingerprintOptions, maxDomNodes, maxDomDepth, maxRefs } = snapshotOptions;
-    const targets: Element[] = [];
-    let visitedNodes = 0;
-    let auxiliaryScanRemaining = maxDomNodes * 8;
-    let semanticCharsRemaining = snapshotOptions.maxSemanticChars;
-    let truncated = false;
-    const sensitiveControl = new RegExp(snapshotOptions.sensitiveControlPattern, 'i');
-    const interactiveRoles = new Set([
-      'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option', 'menuitem', 'tab',
-      'slider', 'spinbutton', 'switch', 'searchbox', 'treeitem', 'gridcell',
-    ]);
-    const normalize = (value: string | null | undefined): string => (
-      (value ?? '').slice(0, fingerprintOptions.maxTextChars * 4).replace(/\s+/g, ' ').trim().slice(0, fingerprintOptions.maxTextChars)
-    );
-    const escapeIdentifier = (value: string): string => (
-      typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`)
-    );
-    const findReferenced = (element: Element, id: string): Element | null => {
-      const root = element.getRootNode();
-      if ('getElementById' in root && typeof root.getElementById === 'function') return root.getElementById(id);
-      return element.ownerDocument.getElementById(id)
-        ?? (root as Document | ShadowRoot).querySelector?.(`#${escapeIdentifier(id)}`)
-        ?? null;
-    };
-    const implicitRole = (element: Element): string => {
-      const explicit = element.getAttribute('role');
-      if (explicit) return explicit.slice(0, 500).split(/\s+/)[0] ?? 'generic';
-      const tag = element.tagName.toLowerCase();
-      if (tag === 'a' && element.hasAttribute('href')) return 'link';
-      if (tag === 'button' || tag === 'summary') return 'button';
-      if (tag === 'textarea') return 'textbox';
-      if (tag === 'select') return element.hasAttribute('multiple') ? 'listbox' : 'combobox';
-      if (tag === 'option') return 'option';
-      if (tag === 'img') return 'img';
-      if (tag === 'form') return 'form';
-      if (tag === 'table') return 'table';
-      if (tag === 'tr') return 'row';
-      if (tag === 'th') return 'columnheader';
-      if (tag === 'td') return 'cell';
-      if (/^h[1-6]$/.test(tag)) return 'heading';
-      if (tag === 'ul' || tag === 'ol') return 'list';
-      if (tag === 'li') return 'listitem';
-      if (tag === 'nav') return 'navigation';
-      if (tag === 'main') return 'main';
-      if (tag === 'article') return 'article';
-      if (tag === 'aside') return 'complementary';
-      if (tag === 'progress') return 'progressbar';
-      if (tag === 'input') {
-        const type = (element.getAttribute('type') ?? 'text').slice(0, 100).toLowerCase();
-        if (type === 'checkbox') return 'checkbox';
-        if (type === 'radio') return 'radio';
-        if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
-        if (type === 'range') return 'slider';
-        if (type === 'number') return 'spinbutton';
-        if (type === 'search') return 'searchbox';
-        return 'textbox';
-      }
-      return 'generic';
-    };
-    const isInteractive = (element: Element): boolean => {
-      const role = implicitRole(element);
-      return interactiveRoles.has(role) || element.hasAttribute('tabindex')
-        || (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false');
-    };
-    const isSensitiveControl = (element: Element): boolean => {
-      if (!['input', 'select', 'textarea'].includes(element.tagName.toLowerCase())) return false;
-      return (element.tagName.toLowerCase() === 'input' && (element.getAttribute('type') ?? '').toLowerCase() === 'hidden')
-        || sensitiveControl.test([
-        element.getAttribute('type'), element.getAttribute('name'), element.getAttribute('id'),
-        element.getAttribute('autocomplete'), element.getAttribute('aria-label'),
-      ].map((value) => value?.slice(0, 500)).filter(Boolean).join(' '));
-    };
-    const boundedNodeText = (element: Element, skipActions: boolean, maxChars = fingerprintOptions.maxTextChars * 4): string => {
-      const parts: string[] = [];
-      const pending: Node[] = [];
-      let current: Node | null = element.firstChild;
-      let inspected = 0;
-      let partChars = 0;
-      while (current && inspected < maxDomNodes && auxiliaryScanRemaining > 0 && partChars < maxChars) {
-        const node: Node = current;
-        const sibling: Node | null = node.nextSibling;
-        inspected += 1;
-        auxiliaryScanRemaining -= 1;
-        if (node.nodeType === 3) {
-          const text = (node.textContent ?? '').slice(0, maxChars - partChars);
-          parts.push(text);
-          partChars += text.length;
-          current = sibling ?? pending.pop() ?? null;
-          continue;
-        }
-        const canDescend = node instanceof Element && (!skipActions || !isInteractive(node)) && node.firstChild;
-        if (canDescend) {
-          if (sibling) pending.push(sibling);
-          current = node.firstChild;
-        } else current = sibling ?? pending.pop() ?? null;
-      }
-      if (current || pending.length) truncated = true;
-      return normalize(parts.join(' '));
-    };
-    const directText = (element: Element): string => boundedNodeText(element, false);
-    const descendantTextWithoutActions = (element: Element): string => boundedNodeText(element, true);
-    const referencedText = (element: Element, attribute: string): string => {
-      const ids = (element.getAttribute(attribute) ?? '').slice(0, fingerprintOptions.maxTextChars * 4).split(/\s+/).filter(Boolean);
-      const parts: string[] = [];
-      let remaining = fingerprintOptions.maxTextChars * 4;
-      for (const id of ids) {
-        const referenced = findReferenced(element, id.slice(0, 500));
-        if (!referenced || remaining <= 0) continue;
-        const text = boundedNodeText(referenced, false, remaining);
-        if (text) { parts.push(text); remaining -= text.length; }
-      }
-      return normalize(parts.join(' '));
-    };
-    const labelFor = (element: Element, role: string): string => {
-      const labelledBy = referencedText(element, 'aria-labelledby');
-      if (labelledBy) return labelledBy;
-      const aria = normalize(element.getAttribute('aria-label'));
-      if (aria) return aria;
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-        const label = element.labels?.[0] ? boundedNodeText(element.labels[0], false) : '';
-        if (label) return label;
-        const placeholder = 'placeholder' in element ? normalize(element.placeholder) : '';
-        if (placeholder) return placeholder;
-      }
-      const alternate = normalize(element.getAttribute('alt') ?? element.getAttribute('title'));
-      if (alternate) return alternate;
-      if (isSensitiveControl(element)) return '';
-      if (interactiveRoles.has(role) || ['heading', 'img', 'columnheader', 'cell'].includes(role)) return descendantTextWithoutActions(element);
-      return element.children.length === 0 && !element.shadowRoot ? directText(element) : '';
-    };
-    const descriptionFor = (element: Element): string => (
-      normalize(element.getAttribute('aria-description')) || referencedText(element, 'aria-describedby')
-    );
-    const fingerprintFor = (element: Element): string => {
-      const tag = element.tagName.toLowerCase();
-      const type = (element.getAttribute('type') ?? '').slice(0, 100).toLowerCase();
-      const labels: string[] = [];
-      const elementLabels = 'labels' in element ? element.labels as NodeListOf<HTMLLabelElement> | null : null;
-      if (elementLabels) {
-        for (let index = 0; index < Math.min(elementLabels.length, 50); index += 1) {
-          const label = elementLabels[index];
-          if (label) labels.push(boundedNodeText(label, false));
-        }
-      }
-      const semanticValue = tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type)
-        ? (element as HTMLInputElement).value
-        : tag === 'option'
-          ? (element as HTMLOptionElement).value
-          : '';
-      const parts: Array<string | boolean> = [
-        'semantic-v2',
-        tag,
-        ...fingerprintOptions.attributes.map((attribute) => normalize(element.getAttribute(attribute))),
-        ...fingerprintOptions.referenceAttributes.map((attribute) => referencedText(element, attribute)),
-        boundedNodeText(element, false),
-        normalize(labels.join(' ')),
-        normalize(semanticValue),
-        'disabled' in element && Boolean(element.disabled),
-        'checked' in element && Boolean(element.checked),
-        'selected' in element && Boolean(element.selected),
-        'readOnly' in element && Boolean(element.readOnly),
-        'required' in element && Boolean(element.required),
-        'isContentEditable' in element && Boolean(element.isContentEditable),
-        (element as HTMLElement).hidden,
-      ];
-      let primary = 0x811c9dc5;
-      let secondary = 0x9e3779b9;
-      let length = 0;
-      for (const rawPart of parts) {
-        const part = String(rawPart).slice(0, fingerprintOptions.maxComponentChars);
-        length += part.length;
-        for (let index = 0; index <= part.length; index += 1) {
-          const code = index === part.length ? 0xffff : part.charCodeAt(index);
-          primary = Math.imul(primary ^ code, 0x01000193) >>> 0;
-          secondary = Math.imul(secondary ^ code, 0x85ebca6b) >>> 0;
-        }
-      }
-      return `semantic-v3:${primary.toString(16).padStart(8, '0')}:${secondary.toString(16).padStart(8, '0')}:${length}`
-        .slice(0, fingerprintOptions.maxFingerprintChars);
-    };
-    const takeSemantic = (value: string, maxChars: number): string => {
-      if (semanticCharsRemaining <= 0) { if (value) truncated = true; return ''; }
-      const bounded = value.slice(0, Math.min(maxChars, semanticCharsRemaining));
-      semanticCharsRemaining -= bounded.length;
-      if (bounded.length < value.length) truncated = true;
-      return bounded;
-    };
-    const descendants = (element: Element): Element[] => {
-      const result: Element[] = [];
-      const remaining = Math.max(0, maxDomNodes - visitedNodes);
-      const append = (children: HTMLCollection): void => {
-        const before = result.length;
-        for (let index = 0; index < children.length && result.length < remaining; index += 1) {
-          const child = children.item(index);
-          if (child) result.push(child);
-        }
-        if (children.length > result.length - before) truncated = true;
+  const payload = await frame.locator('body').evaluateHandle(
+    (body, snapshotOptions) => {
+      const { redactedValue, fingerprintOptions, maxDomNodes, maxDomDepth, maxRefs } = snapshotOptions;
+      const targets: Element[] = [];
+      let visitedNodes = 0;
+      let auxiliaryScanRemaining = maxDomNodes * 8;
+      let semanticCharsRemaining = snapshotOptions.maxSemanticChars;
+      let truncated = false;
+      const sensitiveControl = new RegExp(snapshotOptions.sensitiveControlPattern, 'i');
+      const interactiveRoles = new Set([
+        'button',
+        'link',
+        'textbox',
+        'checkbox',
+        'radio',
+        'combobox',
+        'listbox',
+        'option',
+        'menuitem',
+        'tab',
+        'slider',
+        'spinbutton',
+        'switch',
+        'searchbox',
+        'treeitem',
+        'gridcell',
+      ]);
+      const normalize = (value: string | null | undefined): string =>
+        (value ?? '')
+          .slice(0, fingerprintOptions.maxTextChars * 4)
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, fingerprintOptions.maxTextChars);
+      const escapeIdentifier = (value: string): string =>
+        typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
+      const findReferenced = (element: Element, id: string): Element | null => {
+        const root = element.getRootNode();
+        if ('getElementById' in root && typeof root.getElementById === 'function') return root.getElementById(id);
+        return element.ownerDocument.getElementById(id) ?? (root as Document | ShadowRoot).querySelector?.(`#${escapeIdentifier(id)}`) ?? null;
       };
-      append(element.children);
-      if (element.shadowRoot) {
-        if (result.length < remaining) append(element.shadowRoot.children);
-        else if (element.shadowRoot.children.length > 0) truncated = true;
-      }
-      return result;
-    };
-    const ariaBoolean = (element: Element, name: string): boolean | undefined => {
-      const value = element.getAttribute(name);
-      return value === 'true' ? true : value === 'false' ? false : undefined;
-    };
-    const ariaTriState = (element: Element, name: string): boolean | 'mixed' | undefined => {
-      const value = element.getAttribute(name);
-      return value === 'mixed' ? 'mixed' : value === 'true' ? true : value === 'false' ? false : undefined;
-    };
-    const visit = (element: Element, depth: number, actionsOnly = false): RawNode[] => {
-      if (depth > maxDomDepth || visitedNodes >= maxDomNodes || semanticCharsRemaining < 8) { truncated = true; return []; }
-      visitedNodes += 1;
-      const style = getComputedStyle(element);
-      const inputType = element instanceof HTMLInputElement ? element.type.toLowerCase() : '';
-      if (style.display === 'none' || style.visibility === 'hidden' || (element as HTMLElement).hidden || inputType === 'hidden' || element.getAttribute('aria-hidden') === 'true') return [];
-      const role = implicitRole(element);
-      const interactive = isInteractive(element);
-      const sensitive = isSensitiveControl(element);
-      const rawName = labelFor(element, role);
-      const consumesDescendantName = interactive || ['heading', 'img', 'columnheader', 'cell'].includes(role);
-      const childElements = sensitive ? [] : descendants(element);
-      const children = childElements.flatMap((child) => visit(child, depth + 1, actionsOnly || consumesDescendantName));
-      if (actionsOnly && !interactive) return children;
-      const meaningful = interactive || role !== 'generic' || rawName.length > 0;
-      if (!meaningful && children.length === 1) {
-        return [{ role: 'generic', domDepth: depth, transparent: true, children }];
-      }
-      if (!meaningful && children.length === 0) return [];
-      const name = takeSemantic(rawName, fingerprintOptions.maxTextChars);
-      const description = takeSemantic(descriptionFor(element), fingerprintOptions.maxTextChars);
-      const node: RawNode = {
-        role: takeSemantic(role === 'generic' && childElements.length === 0 ? 'text' : role, 100),
-        ...(name ? { name } : {}),
-        ...(description ? { description } : {}),
-        ...(interactive ? { interactive: true } : {}),
-        domDepth: depth,
+      const implicitRole = (element: Element): string => {
+        const explicit = element.getAttribute('role');
+        if (explicit) return explicit.slice(0, 500).split(/\s+/)[0] ?? 'generic';
+        const tag = element.tagName.toLowerCase();
+        if (tag === 'a' && element.hasAttribute('href')) return 'link';
+        if (tag === 'button' || tag === 'summary') return 'button';
+        if (tag === 'textarea') return 'textbox';
+        if (tag === 'select') return element.hasAttribute('multiple') ? 'listbox' : 'combobox';
+        if (tag === 'option') return 'option';
+        if (tag === 'img') return 'img';
+        if (tag === 'form') return 'form';
+        if (tag === 'table') return 'table';
+        if (tag === 'tr') return 'row';
+        if (tag === 'th') return 'columnheader';
+        if (tag === 'td') return 'cell';
+        if (/^h[1-6]$/.test(tag)) return 'heading';
+        if (tag === 'ul' || tag === 'ol') return 'list';
+        if (tag === 'li') return 'listitem';
+        if (tag === 'nav') return 'navigation';
+        if (tag === 'main') return 'main';
+        if (tag === 'article') return 'article';
+        if (tag === 'aside') return 'complementary';
+        if (tag === 'progress') return 'progressbar';
+        if (tag === 'input') {
+          const type = (element.getAttribute('type') ?? 'text').slice(0, 100).toLowerCase();
+          if (type === 'checkbox') return 'checkbox';
+          if (type === 'radio') return 'radio';
+          if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+          if (type === 'range') return 'slider';
+          if (type === 'number') return 'spinbutton';
+          if (type === 'search') return 'searchbox';
+          return 'textbox';
+        }
+        return 'generic';
       };
-      if (interactive) {
-        if (targets.length < maxRefs) {
-          const fingerprint = fingerprintFor(element);
-          if (fingerprint.length <= semanticCharsRemaining) {
-            semanticCharsRemaining -= fingerprint.length;
-            node.targetIndex = targets.push(element) - 1;
-            node.fingerprint = fingerprint;
+      const isInteractive = (element: Element): boolean => {
+        const role = implicitRole(element);
+        return (
+          interactiveRoles.has(role) ||
+          element.hasAttribute('tabindex') ||
+          (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false')
+        );
+      };
+      const isSensitiveControl = (element: Element): boolean => {
+        if (!['input', 'select', 'textarea'].includes(element.tagName.toLowerCase())) return false;
+        return (
+          (element.tagName.toLowerCase() === 'input' && (element.getAttribute('type') ?? '').toLowerCase() === 'hidden') ||
+          sensitiveControl.test(
+            [
+              element.getAttribute('type'),
+              element.getAttribute('name'),
+              element.getAttribute('id'),
+              element.getAttribute('autocomplete'),
+              element.getAttribute('aria-label'),
+            ]
+              .map((value) => value?.slice(0, 500))
+              .filter(Boolean)
+              .join(' '),
+          )
+        );
+      };
+      const boundedNodeText = (element: Element, skipActions: boolean, maxChars = fingerprintOptions.maxTextChars * 4): string => {
+        const parts: string[] = [];
+        const pending: Node[] = [];
+        let current: Node | null = element.firstChild;
+        let inspected = 0;
+        let partChars = 0;
+        while (current && inspected < maxDomNodes && auxiliaryScanRemaining > 0 && partChars < maxChars) {
+          const node: Node = current;
+          const sibling: Node | null = node.nextSibling;
+          inspected += 1;
+          auxiliaryScanRemaining -= 1;
+          if (node.nodeType === 3) {
+            const text = (node.textContent ?? '').slice(0, maxChars - partChars);
+            parts.push(text);
+            partChars += text.length;
+            current = sibling ?? pending.pop() ?? null;
+            continue;
+          }
+          const canDescend = node instanceof Element && (!skipActions || !isInteractive(node)) && node.firstChild;
+          if (canDescend) {
+            if (sibling) pending.push(sibling);
+            current = node.firstChild;
+          } else current = sibling ?? pending.pop() ?? null;
+        }
+        if (current || pending.length) truncated = true;
+        return normalize(parts.join(' '));
+      };
+      const directText = (element: Element): string => boundedNodeText(element, false);
+      const descendantTextWithoutActions = (element: Element): string => boundedNodeText(element, true);
+      const referencedText = (element: Element, attribute: string): string => {
+        const ids = (element.getAttribute(attribute) ?? '')
+          .slice(0, fingerprintOptions.maxTextChars * 4)
+          .split(/\s+/)
+          .filter(Boolean);
+        const parts: string[] = [];
+        let remaining = fingerprintOptions.maxTextChars * 4;
+        for (const id of ids) {
+          const referenced = findReferenced(element, id.slice(0, 500));
+          if (!referenced || remaining <= 0) continue;
+          const text = boundedNodeText(referenced, false, remaining);
+          if (text) {
+            parts.push(text);
+            remaining -= text.length;
+          }
+        }
+        return normalize(parts.join(' '));
+      };
+      const labelFor = (element: Element, role: string): string => {
+        const labelledBy = referencedText(element, 'aria-labelledby');
+        if (labelledBy) return labelledBy;
+        const aria = normalize(element.getAttribute('aria-label'));
+        if (aria) return aria;
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+          const label = element.labels?.[0] ? boundedNodeText(element.labels[0], false) : '';
+          if (label) return label;
+          const placeholder = 'placeholder' in element ? normalize(element.placeholder) : '';
+          if (placeholder) return placeholder;
+        }
+        const alternate = normalize(element.getAttribute('alt') ?? element.getAttribute('title'));
+        if (alternate) return alternate;
+        if (isSensitiveControl(element)) return '';
+        if (interactiveRoles.has(role) || ['heading', 'img', 'columnheader', 'cell'].includes(role)) return descendantTextWithoutActions(element);
+        return element.children.length === 0 && !element.shadowRoot ? directText(element) : '';
+      };
+      const descriptionFor = (element: Element): string => normalize(element.getAttribute('aria-description')) || referencedText(element, 'aria-describedby');
+      const fingerprintFor = (element: Element): string => {
+        const tag = element.tagName.toLowerCase();
+        const type = (element.getAttribute('type') ?? '').slice(0, 100).toLowerCase();
+        const labels: string[] = [];
+        const elementLabels = 'labels' in element ? (element.labels as NodeListOf<HTMLLabelElement> | null) : null;
+        if (elementLabels) {
+          for (let index = 0; index < Math.min(elementLabels.length, 50); index += 1) {
+            const label = elementLabels[index];
+            if (label) labels.push(boundedNodeText(label, false));
+          }
+        }
+        const semanticValue =
+          tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type)
+            ? (element as HTMLInputElement).value
+            : tag === 'option'
+              ? (element as HTMLOptionElement).value
+              : '';
+        const parts: Array<string | boolean> = [
+          'semantic-v2',
+          tag,
+          ...fingerprintOptions.attributes.map((attribute) => normalize(element.getAttribute(attribute))),
+          ...fingerprintOptions.referenceAttributes.map((attribute) => referencedText(element, attribute)),
+          boundedNodeText(element, false),
+          normalize(labels.join(' ')),
+          normalize(semanticValue),
+          'disabled' in element && Boolean(element.disabled),
+          'checked' in element && Boolean(element.checked),
+          'selected' in element && Boolean(element.selected),
+          'readOnly' in element && Boolean(element.readOnly),
+          'required' in element && Boolean(element.required),
+          'isContentEditable' in element && Boolean(element.isContentEditable),
+          (element as HTMLElement).hidden,
+        ];
+        let primary = 0x811c9dc5;
+        let secondary = 0x9e3779b9;
+        let length = 0;
+        for (const rawPart of parts) {
+          const part = String(rawPart).slice(0, fingerprintOptions.maxComponentChars);
+          length += part.length;
+          for (let index = 0; index <= part.length; index += 1) {
+            const code = index === part.length ? 0xffff : part.charCodeAt(index);
+            primary = Math.imul(primary ^ code, 0x01000193) >>> 0;
+            secondary = Math.imul(secondary ^ code, 0x85ebca6b) >>> 0;
+          }
+        }
+        return `semantic-v3:${primary.toString(16).padStart(8, '0')}:${secondary.toString(16).padStart(8, '0')}:${length}`.slice(
+          0,
+          fingerprintOptions.maxFingerprintChars,
+        );
+      };
+      const takeSemantic = (value: string, maxChars: number): string => {
+        if (semanticCharsRemaining <= 0) {
+          if (value) truncated = true;
+          return '';
+        }
+        const bounded = value.slice(0, Math.min(maxChars, semanticCharsRemaining));
+        semanticCharsRemaining -= bounded.length;
+        if (bounded.length < value.length) truncated = true;
+        return bounded;
+      };
+      const descendants = (element: Element): Element[] => {
+        const result: Element[] = [];
+        const remaining = Math.max(0, maxDomNodes - visitedNodes);
+        const append = (children: HTMLCollection): void => {
+          const before = result.length;
+          for (let index = 0; index < children.length && result.length < remaining; index += 1) {
+            const child = children.item(index);
+            if (child) result.push(child);
+          }
+          if (children.length > result.length - before) truncated = true;
+        };
+        append(element.children);
+        if (element.shadowRoot) {
+          if (result.length < remaining) append(element.shadowRoot.children);
+          else if (element.shadowRoot.children.length > 0) truncated = true;
+        }
+        return result;
+      };
+      const ariaBoolean = (element: Element, name: string): boolean | undefined => {
+        const value = element.getAttribute(name);
+        return value === 'true' ? true : value === 'false' ? false : undefined;
+      };
+      const ariaTriState = (element: Element, name: string): boolean | 'mixed' | undefined => {
+        const value = element.getAttribute(name);
+        return value === 'mixed' ? 'mixed' : value === 'true' ? true : value === 'false' ? false : undefined;
+      };
+      const visit = (element: Element, depth: number, actionsOnly = false): RawNode[] => {
+        if (depth > maxDomDepth || visitedNodes >= maxDomNodes || semanticCharsRemaining < 8) {
+          truncated = true;
+          return [];
+        }
+        visitedNodes += 1;
+        const style = getComputedStyle(element);
+        const inputType = element instanceof HTMLInputElement ? element.type.toLowerCase() : '';
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          (element as HTMLElement).hidden ||
+          inputType === 'hidden' ||
+          element.getAttribute('aria-hidden') === 'true'
+        )
+          return [];
+        const role = implicitRole(element);
+        const interactive = isInteractive(element);
+        const sensitive = isSensitiveControl(element);
+        const rawName = labelFor(element, role);
+        const consumesDescendantName = interactive || ['heading', 'img', 'columnheader', 'cell'].includes(role);
+        const childElements = sensitive ? [] : descendants(element);
+        const children = childElements.flatMap((child) => visit(child, depth + 1, actionsOnly || consumesDescendantName));
+        if (actionsOnly && !interactive) return children;
+        const meaningful = interactive || role !== 'generic' || rawName.length > 0;
+        if (!meaningful && children.length === 1) {
+          return [{ role: 'generic', domDepth: depth, transparent: true, children }];
+        }
+        if (!meaningful && children.length === 0) return [];
+        const name = takeSemantic(rawName, fingerprintOptions.maxTextChars);
+        const description = takeSemantic(descriptionFor(element), fingerprintOptions.maxTextChars);
+        const node: RawNode = {
+          role: takeSemantic(role === 'generic' && childElements.length === 0 ? 'text' : role, 100),
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+          ...(interactive ? { interactive: true } : {}),
+          domDepth: depth,
+        };
+        if (interactive) {
+          if (targets.length < maxRefs) {
+            const fingerprint = fingerprintFor(element);
+            if (fingerprint.length <= semanticCharsRemaining) {
+              semanticCharsRemaining -= fingerprint.length;
+              node.targetIndex = targets.push(element) - 1;
+              node.fingerprint = fingerprint;
+            } else truncated = true;
           } else truncated = true;
-        } else truncated = true;
-      }
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-        if (sensitive) node.value = takeSemantic(redactedValue, 500);
-        else if (element.value) node.value = takeSemantic(element.value, 500);
-        if (element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(inputType)) {
-          node.checked = element.indeterminate ? 'mixed' : element.checked;
         }
-        if (element.disabled) node.disabled = true;
-        if ('readOnly' in element && element.readOnly) node.readonly = true;
-        if ('required' in element && element.required) node.required = true;
-      }
-      node.checked ??= ariaTriState(element, 'aria-checked');
-      node.pressed = ariaTriState(element, 'aria-pressed');
-      if (ariaBoolean(element, 'aria-disabled') === true) node.disabled = true;
-      if (ariaBoolean(element, 'aria-readonly') === true) node.readonly = true;
-      if (ariaBoolean(element, 'aria-required') === true) node.required = true;
-      const expanded = ariaBoolean(element, 'aria-expanded');
-      if (expanded !== undefined) node.expanded = expanded;
-      if (ariaBoolean(element, 'aria-selected') === true) node.selected = true;
-      const root = element.getRootNode() as Document | ShadowRoot;
-      if ('activeElement' in root && root.activeElement === element) node.focused = true;
-      if (role === 'heading') node.level = Number(element.tagName.slice(1)) || Number(element.getAttribute('aria-level')) || undefined;
-      if (children.length) node.children = children;
-      return [node];
-    };
-    return {
-      nodes: descendants(body).flatMap((child) => visit(child, 0)), targets,
-      document: body.ownerDocument, visitedNodes,
-      semanticChars: snapshotOptions.maxSemanticChars - semanticCharsRemaining,
-      truncated,
-    };
-  }, {
-    redactedValue: REDACTED_VALUE,
-    fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
-    maxDomNodes,
-    maxDomDepth: SNAPSHOT_BOUNDS.maxDomDepth,
-    maxRefs,
-    maxSemanticChars,
-    sensitiveControlPattern: SENSITIVE_CONTROL_PATTERN_SOURCE,
-  });
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+          if (sensitive) node.value = takeSemantic(redactedValue, 500);
+          else if (element.value) node.value = takeSemantic(element.value, 500);
+          if (element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(inputType)) {
+            node.checked = element.indeterminate ? 'mixed' : element.checked;
+          }
+          if (element.disabled) node.disabled = true;
+          if ('readOnly' in element && element.readOnly) node.readonly = true;
+          if ('required' in element && element.required) node.required = true;
+        }
+        node.checked ??= ariaTriState(element, 'aria-checked');
+        node.pressed = ariaTriState(element, 'aria-pressed');
+        if (ariaBoolean(element, 'aria-disabled') === true) node.disabled = true;
+        if (ariaBoolean(element, 'aria-readonly') === true) node.readonly = true;
+        if (ariaBoolean(element, 'aria-required') === true) node.required = true;
+        const expanded = ariaBoolean(element, 'aria-expanded');
+        if (expanded !== undefined) node.expanded = expanded;
+        if (ariaBoolean(element, 'aria-selected') === true) node.selected = true;
+        const root = element.getRootNode() as Document | ShadowRoot;
+        if ('activeElement' in root && root.activeElement === element) node.focused = true;
+        if (role === 'heading') node.level = Number(element.tagName.slice(1)) || Number(element.getAttribute('aria-level')) || undefined;
+        if (children.length) node.children = children;
+        return [node];
+      };
+      return {
+        nodes: descendants(body).flatMap((child) => visit(child, 0)),
+        targets,
+        document: body.ownerDocument,
+        visitedNodes,
+        semanticChars: snapshotOptions.maxSemanticChars - semanticCharsRemaining,
+        truncated,
+      };
+    },
+    {
+      redactedValue: REDACTED_VALUE,
+      fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
+      maxDomNodes,
+      maxDomDepth: SNAPSHOT_BOUNDS.maxDomDepth,
+      maxRefs,
+      maxSemanticChars,
+      sensitiveControlPattern: SENSITIVE_CONTROL_PATTERN_SOURCE,
+    },
+  );
 
   const elements: Array<ElementHandle<SVGElement | HTMLElement> | undefined> = [];
   let targetsHandle;
   let documentHandle: JSHandle<Document> | undefined;
   try {
     const captured = await payload.evaluate((value) => ({
-      nodes: value.nodes as RawNode[], visitedNodes: value.visitedNodes,
-      semanticChars: value.semanticChars, truncated: value.truncated,
+      nodes: value.nodes as RawNode[],
+      visitedNodes: value.visitedNodes,
+      semanticChars: value.semanticChars,
+      truncated: value.truncated,
     }));
     targetsHandle = await payload.getProperty('targets');
-    documentHandle = await payload.getProperty('document') as JSHandle<Document>;
+    documentHandle = (await payload.getProperty('document')) as JSHandle<Document>;
     const properties = await targetsHandle.getProperties();
     for (const [key, handle] of properties) {
-      if (!/^\d+$/.test(key)) { await handle.dispose(); continue; }
+      if (!/^\d+$/.test(key)) {
+        await handle.dispose();
+        continue;
+      }
       const element = handle.asElement();
       if (element) elements[Number(key)] = element as ElementHandle<SVGElement | HTMLElement>;
       else await handle.dispose();
     }
     return {
-      nodes: captured.nodes, elements, document: documentHandle,
-      visitedNodes: captured.visitedNodes, semanticChars: captured.semanticChars, truncated: captured.truncated,
+      nodes: captured.nodes,
+      elements,
+      document: documentHandle,
+      visitedNodes: captured.visitedNodes,
+      semanticChars: captured.semanticChars,
+      truncated: captured.truncated,
     };
   } catch (error) {
-    await Promise.all(elements.filter((element): element is ElementHandle<SVGElement | HTMLElement> => element !== undefined)
-      .map((element) => element.dispose().catch(() => undefined)));
+    await Promise.all(
+      elements
+        .filter((element): element is ElementHandle<SVGElement | HTMLElement> => element !== undefined)
+        .map((element) => element.dispose().catch(() => undefined)),
+    );
     await documentHandle?.dispose().catch(() => undefined);
     throw error;
   } finally {
@@ -580,8 +671,11 @@ function boundedSnapshotString(value: string, maxChars: number): string {
 
 function redactSensitiveText(value: string): string {
   return value
-    .replace(/(?:https?:\/\/|\/|#|\?)[^\s"'<>]*/gi, (candidate) => candidate.includes('=') ? redactUrl(candidate) : candidate)
-    .replace(/(\b(?:api[_-]?key|key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|password|secret|token|credential|signature|sig|code|awsaccesskeyid|googleaccessid)\s*[=:]\s*)([^\s&;,]+)/gi, '$1[redacted]');
+    .replace(/(?:https?:\/\/|\/|#|\?)[^\s"'<>]*/gi, (candidate) => (candidate.includes('=') ? redactUrl(candidate) : candidate))
+    .replace(
+      /(\b(?:api[_-]?key|key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|password|secret|token|credential|signature|sig|code|awsaccesskeyid|googleaccessid)\s*[=:]\s*)([^\s&;,]+)/gi,
+      '$1[redacted]',
+    );
 }
 
 export function boundedSnapshotUrl(value: string, maxChars: number = SNAPSHOT_BOUNDS.maxUrlChars): string {
@@ -640,8 +734,12 @@ export async function createSnapshot(options: {
   let remainingRefs: number = SNAPSHOT_BOUNDS.maxRefsTotal;
   let remainingSemanticChars: number = SNAPSHOT_BOUNDS.maxSemanticCharsTotal;
   if (allFrames.length > frames.length) warnings.push(`Snapshot omitted ${allFrames.length - frames.length} frames after the frame limit.`);
-  if (pageUrl !== boundedSnapshotUrl(pageUrl) || rawTitle !== boundedSnapshotTitle(rawTitle)
-    || rawFrameUrls.some((url, index) => url !== boundedFrameUrls[index])) warnings.push('Snapshot provenance was redacted or truncated to its output budget.');
+  if (
+    pageUrl !== boundedSnapshotUrl(pageUrl) ||
+    rawTitle !== boundedSnapshotTitle(rawTitle) ||
+    rawFrameUrls.some((url, index) => url !== boundedFrameUrls[index])
+  )
+    warnings.push('Snapshot provenance was redacted or truncated to its output budget.');
   const ownedElements = new Set<ElementHandle<SVGElement | HTMLElement>>();
   let refCounter = 0;
   try {
@@ -659,11 +757,13 @@ export async function createSnapshot(options: {
         remainingSemanticChars = Math.max(0, remainingSemanticChars - captured.semanticChars);
         if (captured.truncated) warnings.push(`Frame ${frameIndex + 1} exceeded the DOM node, depth, or ref budget and was truncated.`);
         for (const element of elements) if (element) ownedElements.add(element);
-      } catch (error) {
-        rawNodes = [{
-          role: 'document',
-          name: 'Snapshot unavailable for this frame.',
-        }];
+      } catch (_error) {
+        rawNodes = [
+          {
+            role: 'document',
+            name: 'Snapshot unavailable for this frame.',
+          },
+        ];
       }
       const refByTarget = new Map<number, string>();
       const assignRefs = (raw: RawNode): void => {
@@ -708,7 +808,8 @@ export async function createSnapshot(options: {
         return node;
       };
       const projected = projectRawNodes(rawNodes, {
-        interactiveOnly: options.mode === 'interactive', compact: options.mode === 'diff' ? false : options.compact ?? false,
+        interactiveOnly: options.mode === 'interactive',
+        compact: options.mode === 'diff' ? false : (options.compact ?? false),
         maxDepth: Number.isFinite(options.maxDepth) ? Math.max(0, Math.floor(options.maxDepth ?? 3)) : 3,
       });
       const canonicalProjected = projectRawNodes(rawNodes, { interactiveOnly: false, compact: false, maxDepth: 0 });
@@ -727,15 +828,20 @@ export async function createSnapshot(options: {
     }
 
     const currentFrames = options.page.frames();
-    if (options.page.url() !== pageUrl || currentFrames.length !== allFrames.length
-      || frames.some((frame, index) => currentFrames[index] !== frame || frame.url() !== rawFrameUrls[index])) {
+    if (
+      options.page.url() !== pageUrl ||
+      currentFrames.length !== allFrames.length ||
+      frames.some((frame, index) => currentFrames[index] !== frame || frame.url() !== rawFrameUrls[index])
+    ) {
       throw new TendrilError('STALE_ELEMENT_REF', 'Page or frame changed while the snapshot was being captured; take a new snapshot');
     }
 
     const maxChars = Number.isFinite(options.maxChars) ? Math.max(1, Math.floor(options.maxChars)) : 1;
     const formattedDisplay = formatNodesBounded(displayNodes, true, maxChars);
     const formattedCanonical = formatNodesBounded(
-      canonicalNodes, false, maxChars,
+      canonicalNodes,
+      false,
+      maxChars,
       options.mode === 'diff' ? formattedDisplay.lineCount : Number.POSITIVE_INFINITY,
     );
     const displayContent = formattedDisplay.content;
@@ -771,9 +877,13 @@ export async function createSnapshot(options: {
     };
     if (options.baselineSnapshotId) result.baselineSnapshotId = options.baselineSnapshotId;
     if (diffSummary) result.diffSummary = diffSummary;
-    if (!truncated && options.mode !== 'diff'
-      && countSnapshotNodes(displayNodes, MAX_STRUCTURED_SNAPSHOT_NODES) <= MAX_STRUCTURED_SNAPSHOT_NODES
-      && fullContent.length + JSON.stringify(displayNodes).length <= maxChars) result.nodes = displayNodes;
+    if (
+      !truncated &&
+      options.mode !== 'diff' &&
+      countSnapshotNodes(displayNodes, MAX_STRUCTURED_SNAPSHOT_NODES) <= MAX_STRUCTURED_SNAPSHOT_NODES &&
+      fullContent.length + JSON.stringify(displayNodes).length <= maxChars
+    )
+      result.nodes = displayNodes;
     return { result, refs, documents, canonicalContent, displayContent, fullContent };
   } catch (error) {
     await Promise.all([

@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { TendrilError } from '../errors.js';
 import type { SessionCreateOptions, SessionId, SessionInfo, TendrilConfig } from '../types.js';
-import { ensureDir, newId, pathWithinOwnedRoot, type Logger } from '../util.js';
+import { ensureDir, type Logger, newId, pathWithinOwnedRoot } from '../util.js';
 import { acquireProfileFileLock, type ProfileFileLock } from './profile-lock.js';
 import { validateProfileName } from './profile-name.js';
 import { TendrilSession } from './session.js';
@@ -28,8 +28,7 @@ interface LeaseGroup {
 }
 
 function resourceCleanupUnverified(error: unknown): boolean {
-  return error instanceof TendrilError
-    && (error.details?.browserTerminationVerified === false || error.details?.resourceCleanupVerified === false);
+  return error instanceof TendrilError && (error.details?.browserTerminationVerified === false || error.details?.resourceCleanupVerified === false);
 }
 
 export class BrowserManager {
@@ -91,9 +90,7 @@ export class BrowserManager {
       }
       const pending = this.profileReservations.get(options.profile);
       if (pending) {
-        return pending.leaseGroup?.autoClose
-          ? this.joinLeaseGroup(pending.leaseGroup)
-          : this.borrow(await pending.promise);
+        return pending.leaseGroup?.autoClose ? this.joinLeaseGroup(pending.leaseGroup) : this.borrow(await pending.promise);
       }
     }
 
@@ -177,8 +174,11 @@ export class BrowserManager {
         if (!options.profile) {
           // userDataDir is generated from newId beneath the configured runtime root.
           // lgtm[js/path-injection]
-          try { await rm(userDataDir, { recursive: true, force: true }); }
-          catch (cleanupError) { cleanupErrors.push(cleanupError); }
+          try {
+            await rm(userDataDir, { recursive: true, force: true });
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
         }
         if (cleanupErrors.length) {
           const failure = new AggregateError([error, ...cleanupErrors], 'Browser session creation failed and cleanup was incomplete');
@@ -282,11 +282,12 @@ export class BrowserManager {
         this.cleanupFailures.delete(id);
       } catch (error) {
         this.cleanupFailures.set(id, error);
-        if (lock) this.logger.error('Retaining profile lock because session cleanup was not verified', {
-          sessionId: id,
-          profile: session.profile,
-          error: String(error),
-        });
+        if (lock)
+          this.logger.error('Retaining profile lock because session cleanup was not verified', {
+            sessionId: id,
+            profile: session.profile,
+            error: String(error),
+          });
         throw error;
       }
     })();
@@ -312,9 +313,7 @@ export class BrowserManager {
       await Promise.allSettled([...this.pendingCreates.values()]);
       const closes = [...this.pendingCloses.values(), ...[...this.sessions.keys()].map((id) => this.close(id))];
       const results = await Promise.allSettled(closes);
-      const failures = results
-        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-        .map((result) => result.reason as unknown);
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map((result) => result.reason as unknown);
       for (const failure of this.cleanupFailures.values()) {
         if (!failures.includes(failure)) failures.push(failure);
       }
@@ -326,11 +325,9 @@ export class BrowserManager {
   private async reapIdle(): Promise<void> {
     if (this.closing) return;
     const cutoff = Date.now() - this.config.sessionIdleMs;
-    const expired = [...this.sessions.values()].filter((session) => (
-      session.ephemeral
-      && !this.leaseGroups.has(session.id)
-      && session.lastActivityAt.getTime() < cutoff
-    ));
+    const expired = [...this.sessions.values()].filter(
+      (session) => session.ephemeral && !this.leaseGroups.has(session.id) && session.lastActivityAt.getTime() < cutoff,
+    );
     for (const session of expired) {
       this.logger.info('Closing idle session', { sessionId: session.id });
       await this.close(session.id).catch((error) => this.logger.warn('Failed to close idle session', { sessionId: session.id, error: String(error) }));

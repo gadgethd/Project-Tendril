@@ -23,11 +23,7 @@ export class TendrilError extends Error {
   readonly details: Record<string, unknown> | undefined;
   readonly retryable: boolean;
 
-  constructor(
-    code: TendrilErrorCode,
-    message: string,
-    options: { details?: Record<string, unknown>; retryable?: boolean; cause?: unknown } = {},
-  ) {
+  constructor(code: TendrilErrorCode, message: string, options: { details?: Record<string, unknown>; retryable?: boolean; cause?: unknown } = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'TendrilError';
     this.code = code;

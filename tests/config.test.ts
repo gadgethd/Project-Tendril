@@ -79,7 +79,10 @@ describe('configuration', () => {
     await expect(loadConfig()).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR', message: expect.stringContaining('port') });
     vi.stubEnv('TENDRIL_PORT', '3210');
     const unsafeOverride = { unexpected: true } as Partial<Parameters<typeof loadConfig>[0]>;
-    await expect(loadConfig({ overrides: unsafeOverride as never })).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR', message: expect.stringContaining('Unrecognized key') });
+    await expect(loadConfig({ overrides: unsafeOverride as never })).rejects.toMatchObject({
+      code: 'CONFIGURATION_ERROR',
+      message: expect.stringContaining('Unrecognized key'),
+    });
   });
 
   it('fails closed for an explicitly selected missing file', async () => {
