@@ -781,21 +781,16 @@ export async function closeChromiumResources(
       );
       return;
     }
-    let snapshot: WindowsProcessTreeSnapshot;
-    try {
-      if (!options.windowsRootIdentity) throw new Error('Windows Chromium launch-time process identity is unavailable');
-      snapshot = captureWindowsProcessTree(
-        pid,
-        await listWindowsProcesses(scopedOptions, stageTimeout(forceTimeoutMs, 'Windows process enumeration')),
-        options.windowsRootIdentity,
-      );
-    } catch (error) {
-      // Give Chromium a chance to flush its profile even though tree verification is
-      // unavailable, then fail closed so the manager retains the profile lease.
+    if (!options.windowsRootIdentity) {
+      // Launch-time identity is unavailable (cold/slow Windows runner):
+      // terminate child-anchored instead. Every descendant of the child
+      // belongs to this userDataDir-scoped launch, so this is safe without a
+      // snapshot. The close only fails if the main process genuinely cannot
+      // be killed.
       try {
         await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser close'), 'Chromium browser close');
       } catch {
-        /* retain the identity-capture failure below */
+        /* force cleanup below */
       }
       if (!childHasExited(child)) {
         try {
@@ -811,8 +806,34 @@ export async function closeChromiumResources(
             throw new Error(`Chromium main process ${pid} did not report exit after identity-safe immediate taskkill`);
           }
         } catch (terminationError) {
-          throw new AggregateError([error, terminationError], 'Windows Chromium identity capture and immediate cleanup failed');
+          throw new AggregateError([terminationError], 'Windows Chromium identity capture and immediate cleanup failed');
         }
+      }
+      if (scopedOptions.windowsExitCleanup) {
+        await withTimeout(
+          scopedOptions.windowsExitCleanup(cleanupDeadline),
+          stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
+          'Windows Chromium child-exit cleanup',
+        ).catch(() => undefined);
+        scopedOptions.windowsExitCleanup?.markVerified();
+      }
+      return;
+    }
+    let snapshot: WindowsProcessTreeSnapshot;
+    try {
+      snapshot = captureWindowsProcessTree(
+        pid,
+        await listWindowsProcesses(scopedOptions, stageTimeout(forceTimeoutMs, 'Windows process enumeration')),
+        options.windowsRootIdentity,
+      );
+    } catch (error) {
+      // Identity is present but the launch-time tree capture failed (PID
+      // reuse or enumeration timeout): fail closed WITHOUT taskkill, since
+      // taskkilling a reused PID could terminate an unrelated process.
+      try {
+        await withTimeout(requestChromiumShutdown(browser), stageTimeout(browserCloseTimeoutMs, 'browser close'), 'Chromium browser close');
+      } catch {
+        /* retain the identity-capture failure below */
       }
       throw error;
     }
