@@ -8,32 +8,22 @@ import { loadConfig } from '../src/config.js';
 import { createRuntime, type TendrilRuntime } from '../src/runtime.js';
 
 let runtime: TendrilRuntime | undefined;
-afterEach(async () => {
-  await runtime?.close();
-  runtime = undefined;
-});
+afterEach(async () => { await runtime?.close(); runtime = undefined; });
 
 describe('TendrilSession', () => {
   it('flushes a named-profile cookie before close and restores it after reopening', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-reopen-'));
-    runtime = await createRuntime(
-      await loadConfig({
-        overrides: {
-          dataDir: path.join(root, 'data'),
-          runtimeDir: path.join(root, 'run'),
-          maxSessions: 1,
-          logLevel: 'error',
-        },
-      }),
-    );
+    runtime = await createRuntime(await loadConfig({ overrides: {
+      dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error',
+    } }));
     const first = await runtime.manager.create({ profile: 'cookie-reopen' });
     await first.importCookies([{ name: 'persisted', value: 'yes', url: 'https://example.test/' }]);
     await runtime.manager.close(first.id);
 
     const reopened = await runtime.manager.create({ profile: 'cookie-reopen' });
-    expect(await reopened.exportCookies()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: 'persisted', value: 'yes', domain: 'example.test' })]),
-    );
+    expect(await reopened.exportCookies()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'persisted', value: 'yes', domain: 'example.test' }),
+    ]));
   });
 
   it('drives a semantic snapshot and element refs in real Chromium', async () => {
@@ -41,9 +31,7 @@ describe('TendrilSession', () => {
     const config = await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } });
     runtime = await createRuntime(config);
     const session = await runtime.manager.create();
-    await session.setContent(
-      `<!doctype html><title>Fixture</title><main><h1>Test form</h1><label>Name <input id="name"></label><button id="save" onclick="document.querySelector('h1').textContent='Saved '+document.querySelector('#name').value">Save</button></main>`,
-    );
+    await session.setContent(`<!doctype html><title>Fixture</title><main><h1>Test form</h1><label>Name <input id="name"></label><button id="save" onclick="document.querySelector('h1').textContent='Saved '+document.querySelector('#name').value">Save</button></main>`);
     const snapshot = await session.snapshot({ mode: 'interactive' });
     expect(snapshot.content).toContain('textbox');
     expect(snapshot.content).toContain('button');
@@ -59,7 +47,9 @@ describe('TendrilSession', () => {
     const capture = await session.capture({ format: 'png' });
     expect(capture.mimeType).toBe('image/png');
     expect(Buffer.byteLength(capture.data, 'base64')).toBeGreaterThan(1000);
-    expect(session.getActivityLog().map((entry) => entry.type)).toEqual(['snapshot', 'act', 'snapshot', 'act', 'extract', 'capture']);
+    expect(session.getActivityLog().map((entry) => entry.type)).toEqual([
+      'snapshot', 'act', 'snapshot', 'act', 'extract', 'capture',
+    ]);
     const pages = await session.listPagesWithContext();
     expect(pages[0]?.lastSnapshot).toHaveLength(Math.min(500, refreshed.content.length));
 
@@ -70,9 +60,7 @@ describe('TendrilSession', () => {
 
   it('rejects non-http navigation protocols', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-test-'));
-    runtime = await createRuntime(
-      await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }),
-    );
+    runtime = await createRuntime(await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), maxSessions: 1, logLevel: 'error' } }));
     const session = await runtime.manager.create();
     await expect(session.navigate({ url: 'file:///etc/passwd' })).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
   });
@@ -505,11 +493,8 @@ describe('TendrilSession', () => {
     try {
       const config = await loadConfig({
         overrides: {
-          dataDir: path.join(root, 'data'),
-          runtimeDir: path.join(root, 'run'),
-          workspaceRoots: [root],
-          maxSessions: 1,
-          logLevel: 'error',
+          dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), workspaceRoots: [root],
+          maxSessions: 1, logLevel: 'error',
         },
       });
       runtime = await createRuntime(config);
@@ -532,14 +517,8 @@ describe('TendrilSession', () => {
       expect((await session.exportSession()).viewport).toEqual({ width: 800, height: 600 });
 
       const snapshot = await session.snapshot({ mode: 'interactive' });
-<<<<<<< HEAD
-      const downloadRef =
-        snapshot.content.match(/link[^\n]*Download fixture[^\n]*\[ref=(e\d+)\]/)?.[1] ??
-        snapshot.content.match(/link[^\n]*\[ref=(e\d+)\][^\n]*Download fixture/)?.[1];
-=======
       const downloadRef = snapshot.content.match(/link[^\n]*Download fixture[^\n]*\[ref=([^\]]+)\]/)?.[1]
         ?? snapshot.content.match(/link[^\n]*\[ref=([^\]]+)\][^\n]*Download fixture/)?.[1];
->>>>>>> origin/main
       expect(downloadRef).toBeTruthy();
       await session.act({ action: 'click', ref: downloadRef });
 
@@ -552,7 +531,8 @@ describe('TendrilSession', () => {
       expect(download?.failure).toBeUndefined();
       expect(download?.path).toBeTruthy();
       const destination = path.join(root, 'saved-download.txt');
-      await expect(session.saveDownload(download!.id, path.join(os.tmpdir(), 'outside-workspace.txt'))).rejects.toMatchObject({ code: 'FILE_ACCESS_DENIED' });
+      await expect(session.saveDownload(download!.id, path.join(os.tmpdir(), 'outside-workspace.txt')))
+        .rejects.toMatchObject({ code: 'FILE_ACCESS_DENIED' });
       const saved = await session.saveDownload(download!.id, destination);
       expect(saved).toEqual({ path: await realpath(destination), bytes: 13 });
       expect(await readFile(destination, 'utf8')).toBe('download body');
@@ -563,7 +543,7 @@ describe('TendrilSession', () => {
       expect(health.lastActivityAt).toBe(session.lastActivityAt.toISOString());
       expect(session.getActivityLog().map((entry) => entry.type)).toEqual(expect.arrayContaining(['navigate', 'evaluate', 'snapshot', 'act']));
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
 });
