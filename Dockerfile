@@ -20,6 +20,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system tendril && useradd --system --gid tendril --create-home tendril
 RUN mkdir -p /data /tmp/tendril && chown -R tendril:tendril /data /tmp/tendril
+# The runtime only executes the compiled server; strip node's bundled npm to
+# shrink the image and clear trivy HIGH/CRITICAL findings in npm's vendored
+# toolchain (sigstore, pacote, tar, brace-expansion, ip-address, picomatch).
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    /usr/local/bin/corepack /usr/local/lib/node_modules/corepack
 WORKDIR /app
 COPY --from=build --chown=tendril:tendril /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=tendril:tendril /app/node_modules ./node_modules
