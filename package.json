@@ -1,11 +1,12 @@
 {
   "name": "project-tendril",
   "version": "1.1.0",
-  "description": "A local-first Chromium browser and web-research runtime for AI agents",
+  "description": "A local-first Obscura browser and web-research runtime for AI agents",
   "keywords": [
     "ai-agents",
     "browser-automation",
-    "chromium",
+    "obscura",
+    "rust-browser",
     "mcp",
     "model-context-protocol",
     "web-research"
@@ -41,6 +42,7 @@
     "SECURITY.md",
     "SUPPORT.md",
     "docs",
+    "scripts/benchmark-backends.mjs",
     "Dockerfile",
     "seccomp_profile.json",
     "tendril.config.example.json"
@@ -62,6 +64,7 @@
     "test:coverage": "vitest run --coverage",
     "test:package": "node scripts/test-package.mjs",
     "test:watch": "vitest",
+    "benchmark:backends": "npm run build && node scripts/benchmark-backends.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "biome lint src tests scripts",
     "format": "biome format --write src tests scripts",

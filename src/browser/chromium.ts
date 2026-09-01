@@ -4,16 +4,23 @@ import path from 'node:path';
 import process from 'node:process';
 import { type Browser, type BrowserContext, chromium } from 'playwright';
 import { TendrilError } from '../errors.js';
+import type { BrowserBackend } from '../types.js';
 import { ensureDir, type Logger, pathWithinOwnedRoot, withTimeout } from '../util.js';
 
-export interface ChromiumProcess {
+export interface BrowserProcess {
+  backend: BrowserBackend;
   browser: Browser;
   context: BrowserContext;
   child: ChildProcess;
   cdpPort: number;
   browserPath: string;
+  executablePath: string;
   userDataDir: string;
   close(): Promise<void>;
+}
+
+export interface ChromiumProcess extends BrowserProcess {
+  backend: 'chromium';
 }
 
 async function firstAccessible(paths: string[]): Promise<string | undefined> {
@@ -1007,11 +1014,13 @@ export async function launchChromium(options: {
     options.logger.info('Chromium session started', { pid: child.pid, cdpPort: endpoint.port });
     let closePromise: Promise<void> | undefined;
     return {
+      backend: 'chromium',
       browser,
       context,
       child,
       cdpPort: endpoint.port,
       browserPath: endpoint.browserPath,
+      executablePath,
       userDataDir: options.userDataDir,
       async close() {
         if (!closePromise) {

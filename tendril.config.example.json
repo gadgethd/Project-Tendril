@@ -1,6 +1,8 @@
 {
   "host": "127.0.0.1",
   "port": 3210,
+  "browserBackend": "obscura",
+  "obscuraStealth": true,
   "headless": true,
   "maxSessions": 4,
   "sessionIdleMs": 600000,

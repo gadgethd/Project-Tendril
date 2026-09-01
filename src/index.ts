@@ -1,4 +1,6 @@
 export { CrawlService } from './browser/crawl.js';
+export { launchBrowser } from './browser/backend.js';
+export { findObscura } from './browser/obscura.js';
 export { BrowserManager, type SessionLease } from './browser/manager.js';
 export { SearchService } from './browser/search.js';
 export { TendrilSession } from './browser/session.js';

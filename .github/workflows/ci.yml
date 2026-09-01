@@ -65,12 +65,14 @@ jobs:
         # macOS rejects the group probes used during cleanup. The Docker job
         # below verifies the real sandbox, so CI tests run with it disabled.
         env:
+          TENDRIL_BROWSER_BACKEND: chromium
           TENDRIL_ALLOW_NO_SANDBOX: 'true'
         run: npm test
 
       - name: Test with coverage gates
         if: matrix.os == 'ubuntu-latest' && matrix.node == '24.x'
         env:
+          TENDRIL_BROWSER_BACKEND: chromium
           TENDRIL_ALLOW_NO_SANDBOX: "true"
         run: npm run test:coverage
 
@@ -102,7 +104,7 @@ jobs:
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
 
   docker:
-    name: Docker build and Chromium smoke test
+    name: Docker build and Obscura smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -124,7 +126,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Start hardened container
-        run: docker run --detach --rm --name project-tendril-ci --publish 127.0.0.1:3210:3210 --ipc=host --read-only --tmpfs /tmp:rw,nosuid,nodev,size=1g --security-opt seccomp=seccomp_profile.json --cap-drop ALL --cap-add SYS_CHROOT --env TENDRIL_TOKEN=ci-token-for-project-tendril-smoke-test project-tendril:ci
+        run: docker run --detach --rm --name project-tendril-ci --publish 127.0.0.1:3210:3210 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=1g --security-opt seccomp=seccomp_profile.json --cap-drop ALL --env TENDRIL_TOKEN=ci-token-for-project-tendril-smoke-test project-tendril:ci
 
       - name: Wait for health endpoint
         run: |
@@ -136,7 +138,7 @@ jobs:
           done
           exit 1
 
-      - name: Exercise containerized Chromium
+      - name: Exercise containerized Obscura
         run: |
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:3210';
@@ -157,7 +159,7 @@ jobs:
             const content = await fetch(`${base}/v1/sessions/${session.id}/content`, {
               method: 'POST',
               headers,
-              body: JSON.stringify({ html: '<title>Container fixture</title><main><h1>Sandboxed Chromium</h1></main>' }),
+              body: JSON.stringify({ html: '<title>Container fixture</title><main><h1>Sandboxed Obscura</h1></main>' }),
             });
             if (!content.ok) throw new Error(await content.text());
 
@@ -167,7 +169,8 @@ jobs:
               body: JSON.stringify({ mode: 'full' }),
             });
             const body = await snapshot.text();
-            if (!snapshot.ok || !body.includes('Sandboxed Chromium')) throw new Error(body);
+            if (!snapshot.ok || !body.includes('Sandboxed Obscura')) throw new Error(body);
+            if (session.backend !== 'obscura' || session.cdpUrl !== undefined) throw new Error(JSON.stringify(session));
           } finally {
             await fetch(`${base}/v1/sessions/${session.id}`, {
               method: 'DELETE',
@@ -192,3 +195,32 @@ jobs:
       - name: Stop container
         if: always()
         run: docker stop project-tendril-ci || true
+
+  obscura:
+    name: Obscura backend integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned Obscura release
+        run: |
+          curl -fL https://github.com/h4ckf0r0day/obscura/releases/download/v0.2.1/obscura-x86_64-linux-stealth.tar.gz -o /tmp/obscura.tar.gz
+          echo '49856870420960ce489d2d1ff40fffac5b8c016604b9af0ded8ed6373abd9302  /tmp/obscura.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/obscura.tar.gz -C /tmp
+
+      - name: Test the Rust browser backend
+        env:
+          TENDRIL_OBSCURA_PATH: /tmp/obscura
+        run: npx vitest run tests/obscura.test.ts

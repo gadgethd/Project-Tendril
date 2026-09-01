@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod/v4';
 import { TendrilError } from './errors.js';
-import type { SearchProviderName, TendrilConfig } from './types.js';
+import type { BrowserBackend, SearchProviderName, TendrilConfig } from './types.js';
 
 interface PlatformPaths {
   platform?: NodeJS.Platform;
@@ -36,7 +36,9 @@ export function defaultRuntimeDirectory(options: PlatformPaths = {}): string {
 export const DEFAULT_CONFIG: TendrilConfig = {
   host: '127.0.0.1',
   port: 3210,
+  browserBackend: 'obscura',
   headless: true,
+  obscuraStealth: true,
   maxSessions: 4,
   sessionIdleMs: 10 * 60_000,
   actionTimeoutMs: 30_000,
@@ -100,8 +102,11 @@ const ownedDirectory = (label: string) =>
 const configObject = z.strictObject({
   host: boundedString('host', 255).regex(/^[^\s/]+$/, 'host must not contain whitespace or a path'),
   port: z.number().int().min(0).max(65_535),
+  browserBackend: z.enum(['obscura', 'chromium']),
   headless: z.boolean(),
   executablePath: boundedString('executablePath').optional(),
+  obscuraExecutablePath: boundedString('obscuraExecutablePath').optional(),
+  obscuraStealth: z.boolean(),
   maxSessions: z.number().int().min(1).max(64),
   sessionIdleMs: z
     .number()
@@ -144,6 +149,9 @@ const configSchema = configObject.superRefine((value, context) => {
   }
   if (path.resolve(value.dataDir) === path.resolve(value.runtimeDir)) {
     context.addIssue({ code: 'custom', path: ['runtimeDir'], message: 'runtimeDir must be different from persistent dataDir' });
+  }
+  if (value.browserBackend === 'obscura' && !value.headless) {
+    context.addIssue({ code: 'custom', path: ['headless'], message: 'Obscura is headless-only; select browserBackend=chromium for headed mode' });
   }
 });
 const configPatchSchema = configObject.partial();
@@ -218,8 +226,11 @@ export async function loadConfig(options: { configPath?: string; overrides?: Par
   };
   set('host', process.env.TENDRIL_HOST);
   set('port', envNumber(process.env.TENDRIL_PORT, 'TENDRIL_PORT'));
+  set('browserBackend', process.env.TENDRIL_BROWSER_BACKEND as BrowserBackend | undefined);
   set('headless', envBoolean(process.env.TENDRIL_HEADLESS, 'TENDRIL_HEADLESS'));
   set('executablePath', process.env.TENDRIL_EXECUTABLE_PATH);
+  set('obscuraExecutablePath', process.env.TENDRIL_OBSCURA_PATH);
+  set('obscuraStealth', envBoolean(process.env.TENDRIL_OBSCURA_STEALTH, 'TENDRIL_OBSCURA_STEALTH'));
   set('maxSessions', envNumber(process.env.TENDRIL_MAX_SESSIONS, 'TENDRIL_MAX_SESSIONS'));
   set('sessionIdleMs', envNumber(process.env.TENDRIL_SESSION_IDLE_MS, 'TENDRIL_SESSION_IDLE_MS'));
   set('actionTimeoutMs', envNumber(process.env.TENDRIL_ACTION_TIMEOUT_MS, 'TENDRIL_ACTION_TIMEOUT_MS'));
@@ -240,5 +251,7 @@ export async function loadConfig(options: { configPath?: string; overrides?: Par
   set('logLevel', process.env.TENDRIL_LOG_LEVEL as TendrilConfig['logLevel'] | undefined);
 
   const overrideConfig = options.overrides === undefined ? {} : parsePatch(options.overrides, 'configuration overrides');
-  return parseConfig({ ...DEFAULT_CONFIG, ...fileConfig, ...envConfig, ...overrideConfig });
+  const config = { ...DEFAULT_CONFIG, ...fileConfig, ...envConfig, ...overrideConfig };
+  config.obscuraExecutablePath ??= path.join(config.dataDir, 'bin', process.platform === 'win32' ? 'obscura.exe' : 'obscura');
+  return parseConfig(config);
 }

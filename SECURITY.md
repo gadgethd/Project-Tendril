@@ -22,7 +22,7 @@ Use GitHub's private vulnerability reporting flow:
 Include:
 
 - The affected Project Tendril version or commit.
-- Operating system, Node.js version, Chromium version, and deployment model.
+- Operating system, Node.js version, browser backend and version, and deployment model.
 - The affected interface: MCP, REST, CDP, dashboard, Docker, CLI, or browser runtime.
 - Reproduction steps or a minimal proof of concept.
 - Expected impact and any known mitigations.
@@ -36,16 +36,16 @@ Maintainers will acknowledge a complete report as soon as practical, investigate
 
 Project Tendril's main controls include:
 
-- Dedicated Chromium processes and user-data directories per session.
+- Dedicated browser processes and storage directories per session.
 - Public-network-only egress by default through a checked per-session proxy.
 - Loopback-only HTTP binding and bearer authentication by default.
 - Explicit named profiles rather than access to a user's normal browser profile.
 - Canonical, workspace-restricted upload paths.
 - Bounded page, network, console, and response-body output.
 - Untrusted-content markers and prompt-injection warnings.
-- A non-root, sandboxed Chromium container configuration.
+- A non-root, capability-dropped Obscura container configuration, with sandboxed Chromium available as a fallback.
 
-These controls are guardrails, not a complete VM boundary. Raw CDP is intentionally powerful, persistent profiles carry the authority of their logged-in sessions, and a browser engine can contain unknown vulnerabilities. Use an additional VM or host boundary for high-risk adversarial browsing.
+These controls are guardrails, not a complete VM boundary. Raw CDP on Chromium sessions is intentionally powerful, persistent profiles carry the authority of their logged-in sessions, and either browser engine can contain unknown vulnerabilities. Use an additional VM or host boundary for high-risk adversarial browsing.
 
 The full operational model is documented in [docs/security.md](docs/security.md).
 

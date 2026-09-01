@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Describe the agent workflow first. Requests for CAPTCHA solving, stealth/fingerprint evasion, access-control bypass, hosted telemetry, or private-network access by default are outside Project Tendril's scope.
+        Describe the agent workflow first. Requests for CAPTCHA solving, access-control bypass, hosted telemetry, or private-network access by default are outside Project Tendril's scope.
 
   - type: textarea
     id: problem

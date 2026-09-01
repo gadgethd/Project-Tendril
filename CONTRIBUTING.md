@@ -9,7 +9,7 @@ Thank you for helping improve Project Tendril. Contributions are accepted under 
 - Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 - Read [docs/architecture.md](docs/architecture.md) and [docs/security.md](docs/security.md).
 
-Project Tendril will not accept features that automate CAPTCHA solving, disguise browser automation, evade fingerprinting or bot protection, bypass access controls or paywalls, add hosted telemetry, attach to normal browser profiles implicitly, or enable private-network access by default.
+Project Tendril will not accept features that automate CAPTCHA solving, bypass bot protection, access controls, or paywalls, add hosted telemetry, attach to normal browser profiles implicitly, or enable private-network access by default. Privacy-oriented fingerprint consistency and tracker blocking must not claim or implement authorization bypass.
 
 ## Development environment
 
@@ -17,8 +17,9 @@ Requirements:
 
 - Node.js 22.19 or newer.
 - npm with lockfile support.
-- Chromium, Google Chrome, or Playwright-managed Chromium.
-- A non-root user with a functioning browser sandbox.
+- Obscura 0.2.1+ for the default backend.
+- Chromium, Google Chrome, or Playwright-managed Chromium for fallback coverage.
+- A non-root user.
 
 Set up the repository:
 
@@ -27,10 +28,11 @@ git clone https://github.com/gadgethd/Project-Tendril.git
 cd Project-Tendril
 npm ci
 npm run build
+node dist/cli.js install-browser
 node dist/cli.js doctor
 ```
 
-Install Playwright-managed Chromium when needed:
+Install Playwright-managed Chromium for the fallback test suite:
 
 ```bash
 npx playwright install chromium --with-deps
@@ -55,7 +57,7 @@ npm run build
 npm pack --dry-run
 ```
 
-The tests launch real Chromium. A browser-only mock is not sufficient for changes involving navigation, CDP, process cleanup, proxies, snapshots, or browser actions.
+The tests launch real Obscura and Chromium processes. A browser-only mock is not sufficient for changes involving navigation, CDP, process cleanup, proxies, snapshots, or browser actions. Set `TENDRIL_OBSCURA_PATH` to include `tests/obscura.test.ts` locally.
 
 ## Design expectations
 
@@ -69,11 +71,11 @@ The tests launch real Chromium. A browser-only mock is not sufficient for change
 
 ### Browser lifecycle
 
-- Keep one dedicated Chromium process and user-data directory per Tendril session.
+- Keep one dedicated browser process and storage directory per Tendril session.
 - Terminate the complete browser process group.
 - Delete ephemeral state even when launch or shutdown fails.
-- Never use the user's normal Chrome or Chromium profile.
-- Preserve Chromium's native sandbox.
+- Never use the user's normal browser profile.
+- Preserve Chromium's native sandbox and Obscura's SSRF/process boundaries.
 
 ### Network and filesystem
 
@@ -87,7 +89,7 @@ The tests launch real Chromium. A browser-only mock is not sufficient for change
 
 - Treat page text, accessibility labels, metadata, search snippets, and documents as untrusted data.
 - Do not turn webpage instructions into trusted Project Tendril behavior.
-- Do not add stealth patches, CAPTCHA solvers, clearance synthesis, or automated challenge outsourcing.
+- Do not add CAPTCHA solvers, clearance synthesis, automated challenge outsourcing, or access-control evasion.
 - Respect `robots.txt` in research and crawl workflows.
 
 ## Pull requests
@@ -103,7 +105,7 @@ Pull requests should include:
 
 Keep unrelated refactoring out of a behavioral pull request. Reviewers may request smaller commits or separate pull requests.
 
-All CI checks must pass on Linux, Windows, and macOS. The Docker job must also build and launch sandboxed Chromium successfully.
+All CI checks must pass on Linux, Windows, and macOS. The Obscura integration and default Docker image must also build and browse successfully.
 
 ## Commit messages
 

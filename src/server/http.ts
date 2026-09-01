@@ -7,7 +7,7 @@ import ipaddr from 'ipaddr.js';
 import type { CrawlService } from '../browser/crawl.js';
 import type { BrowserManager, SessionLease } from '../browser/manager.js';
 import type { SearchService } from '../browser/search.js';
-import { asTendrilError } from '../errors.js';
+import { asTendrilError, TendrilError } from '../errors.js';
 import { constantTimeTokenEqual, createCdpCapability, loadOrCreateHttpToken, parseBearerAuthorization, verifyCdpCapability } from '../security/auth.js';
 import { BoundedRateLimiter, type RateLimitDecision } from '../security/rate-limit.js';
 import type { Logger } from '../util.js';
@@ -163,7 +163,9 @@ export async function startHttpServer(services: {
 
   app.get('/', (_request, response) => response.redirect('/dashboard'));
   app.get('/dashboard', (_request, response) => response.type('html').send(DASHBOARD_HTML));
-  app.get('/health', (_request, response) => response.json({ status: 'ok', version: '1.1.0', chromiumSessions: manager.activeCount() }));
+  app.get('/health', (_request, response) =>
+    response.json({ status: 'ok', version: '1.1.0', backend: manager.config.browserBackend, browserSessions: manager.activeCount() }),
+  );
   // Every authorization failure below consumes a bounded per-peer bucket, and CDP consumes a separate attempt bucket.
   // lgtm[js/missing-rate-limiting]
   app.use((request, response, next) => {
@@ -195,7 +197,7 @@ export async function startHttpServer(services: {
   app.get('/openapi.json', (_request, response) => response.json(openApiDocument(manager.config.port)));
   app.get('/metrics', async (_request, response) => {
     const sessions = await manager.list();
-    response.type('text/plain').send(`# HELP tendril_sessions Active Chromium sessions\n# TYPE tendril_sessions gauge\ntendril_sessions ${sessions.length}\n`);
+    response.type('text/plain').send(`# HELP tendril_sessions Active browser sessions\n# TYPE tendril_sessions gauge\ntendril_sessions ${sessions.length}\n`);
   });
 
   app.post('/mcp', async (request, response) => {
@@ -218,7 +220,9 @@ export async function startHttpServer(services: {
   app.get('/v1/sessions', async (request, response, next) => {
     try {
       response.json({
-        sessions: await manager.list((session) => publicCdpUrl(manager, session.id, session.chromium.browserPath, token, request.headers.host)),
+        sessions: await manager.list((session) =>
+          session.supportsSharedCdpGateway() ? publicCdpUrl(manager, session.id, session.browserProcess.browserPath, token, request.headers.host) : undefined,
+        ),
       });
     } catch (error) {
       next(error);
@@ -233,11 +237,11 @@ export async function startHttpServer(services: {
   });
   app.get('/v1/sessions/:id', async (request, response, next) => {
     try {
-      response.json(
-        await manager
-          .get(request.params.id!)
-          .info(publicCdpUrl(manager, request.params.id!, manager.get(request.params.id!).chromium.browserPath, token, request.headers.host)),
-      );
+      const session = manager.get(request.params.id!);
+      const cdpUrl = session.supportsSharedCdpGateway()
+        ? publicCdpUrl(manager, session.id, session.browserProcess.browserPath, token, request.headers.host)
+        : undefined;
+      response.json(await session.info(cdpUrl));
     } catch (error) {
       next(error);
     }
@@ -459,6 +463,9 @@ export async function startHttpServer(services: {
     try {
       const id = String(request.params.id);
       const session = manager.get(id);
+      if (!session.supportsSharedCdpGateway()) {
+        throw new TendrilError('UNSUPPORTED_OPERATION', 'Raw CDP gateway access is unavailable for Obscura sessions');
+      }
       const forwarded = new URL(request.originalUrl, 'http://127.0.0.1');
       forwarded.searchParams.delete('capability');
       request.url = `${forwarded.pathname.replace(`/cdp/${id}`, '') || '/'}${forwarded.search}`;
@@ -508,6 +515,11 @@ export async function startHttpServer(services: {
       authFailures.reset(peer);
       cdpAttempts.reset(peer);
       const session = manager.get(sessionId);
+      if (!session.supportsSharedCdpGateway()) {
+        socket.write('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       url.searchParams.delete('capability');
       request.url = `${match[2]}${url.search}`;
       delete request.headers.authorization;
@@ -571,7 +583,7 @@ function openApiDocument(port: number): Record<string, unknown> {
       '/v1/links': { post: { summary: 'Extract links' } },
       '/v1/screenshot': { post: { summary: 'Capture screenshot' } },
       '/v1/pdf': { post: { summary: 'Generate PDF' } },
-      '/v1/search': { post: { summary: 'Search the web with Chromium' } },
+      '/v1/search': { post: { summary: 'Search the web with the configured browser backend' } },
       '/v1/research': { post: { summary: 'Gather cited web evidence' } },
       '/v1/crawl': { post: { summary: 'Start a bounded crawl' } },
       '/mcp': { post: { summary: 'MCP Streamable HTTP endpoint' } },

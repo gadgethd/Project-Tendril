@@ -94,7 +94,10 @@ describe('HTTP and CDP interfaces', () => {
       config,
       activeCount: () => 0,
       list: vi.fn(async () => []),
-      get: vi.fn(() => ({ backendCdpHttpUrl: () => `http://127.0.0.1:${backendPort}` })),
+      get: vi.fn(() => ({
+        backendCdpHttpUrl: () => `http://127.0.0.1:${backendPort}`,
+        supportsSharedCdpGateway: () => true,
+      })),
     } as unknown as BrowserManager;
     const logger = new Logger('error');
     try {
@@ -235,7 +238,11 @@ describe('HTTP and CDP interfaces', () => {
         logLevel: 'error',
       },
     });
-    const session = { id: 'ses_advertised', chromium: { browserPath: '/devtools/browser/id' } } as unknown as { id: string };
+    const session = {
+      id: 'ses_advertised',
+      browserProcess: { browserPath: '/devtools/browser/id' },
+      supportsSharedCdpGateway: () => true,
+    } as unknown as { id: string };
     const manager = {
       config,
       activeCount: () => 1,

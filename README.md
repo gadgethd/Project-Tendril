@@ -11,14 +11,14 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.19-339933?logo=node.js&logoColor=white)](package.json)
 [![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20HTTP-7c3aed)](https://modelcontextprotocol.io/)
 
-**A local-first Chromium browser and web-research runtime built for AI agents.**
+**A local-first Obscura browser and web-research runtime built for AI agents, with Chromium available as a compatibility fallback.**
 
-Project Tendril gives MCP clients and autonomous agents a real, isolated Chromium process with token-efficient semantic snapshots, ref-based browser actions, rendered-page extraction, search, research, crawling, screenshots, PDFs, diagnostics, and authenticated Chrome DevTools Protocol access.
+Project Tendril gives MCP clients and autonomous agents a real, isolated browser process with token-efficient semantic snapshots, ref-based browser actions, rendered-page extraction, search, research, crawling, screenshots, diagnostics, and authenticated Chrome DevTools Protocol access where the backend supports it. The default [Obscura](https://github.com/h4ckf0r0day/obscura) engine is written in Rust; Chromium remains available for headed sessions and long-tail web compatibility.
 
 It runs locally, has no embedded LLM, sends no telemetry, and never attaches to your everyday browser profile.
 
 > [!IMPORTANT]
-> Project Tendril does not disguise automation, evade paywalls, solve CAPTCHAs, or manufacture clearance cookies. It detects common challenge pages and provides a headed, human-in-the-loop handoff for legitimate access; see [Challenge handling](#challenge-handling).
+> Obscura's stealth mode provides a consistent privacy-oriented fingerprint; Project Tendril does not use it to evade access controls, solve CAPTCHAs, or manufacture clearance cookies. It detects common challenge pages and provides a headed Chromium handoff for legitimate access; see [Challenge handling](#challenge-handling).
 
 ## Contents
 
@@ -44,29 +44,30 @@ It runs locally, has no embedded LLM, sends no telemetry, and never attaches to 
 
 ## Why Project Tendril?
 
-Most browser integrations give an agent either raw screenshots or a large, unstable DOM. Project Tendril adds an agent-oriented layer over Chromium:
+Most browser integrations give an agent either raw screenshots or a large, unstable DOM. Project Tendril adds an agent-oriented layer over a selectable browser backend:
 
-- **Real browser compatibility** — JavaScript, cookies, forms, downloads, frames, PDFs, and modern rendering all run in Chromium.
+- **Fast default engine** — Obscura provides a Rust browser engine, V8 JavaScript, CDP automation, persistent storage, and consistent fingerprinting without shipping Chromium in the default container.
+- **Compatibility fallback** — Chromium supports headed operation and browser features not yet implemented by Obscura.
 - **Compact semantic state** — accessibility-informed snapshots expose roles, names, values, and short-lived element refs without returning an entire page source.
 - **Deterministic actions** — agents act on refs from the newest snapshot; stale refs fail instead of silently selecting the wrong element.
 - **Useful web evidence** — search, rendered-page extraction, and multi-source research return structured URLs and untrusted evidence without hiding an LLM in the browser layer.
-- **Process isolation** — each Tendril session owns a Chromium process, profile directory, CDP endpoint, and network proxy.
+- **Process isolation** — each Tendril session owns a browser process, profile directory, CDP endpoint, and network proxy.
 - **Multiple interfaces** — use stdio MCP, Streamable HTTP MCP, authenticated REST, raw CDP, the CLI, or the local dashboard.
 - **Local control** — profiles, cookies, downloads, browser processes, and logs remain on the machine running Tendril.
 
-Project Tendril is inspired by the architectural ideas in Cloudflare's [Kitesurf announcement](https://blog.cloudflare.com/kitesurf/): fresh sessions, centralized outbound access, structured browser representations, bounded failure, and disposable workers. Project Tendril is an independent implementation, uses local Chromium, and contains no Cloudflare source code.
+Project Tendril is inspired by the architectural ideas in Cloudflare's [Kitesurf announcement](https://blog.cloudflare.com/kitesurf/): fresh sessions, centralized outbound access, structured browser representations, bounded failure, and disposable workers. Project Tendril is an independent implementation and contains no Cloudflare source code.
 
 ## Features
 
 ### Browser automation
 
-- Dedicated Chromium process and user-data directory per session.
+- Dedicated Obscura or Chromium process and user-data directory per session.
 - Ephemeral sessions by default; opt-in named profiles for durable logins.
 - Multiple pages per session with open, list, select, and close operations.
 - Navigation history, reload, configurable load states, and bounded waits.
 - Click, double-click, hover, focus, fill, type, select, check, press, scroll, drag, and upload actions.
-- JavaScript dialogs, cookies, storage, permissions, geolocation, offline mode, viewport, timezone, locale, media preferences, headers, and HTTP credentials.
-- Full-page, viewport, and element screenshots plus PDF output.
+- JavaScript dialogs, cookies, storage, viewport, locale, and headers, with Chromium-only support for permissions, geolocation, offline mode, timezone, media preferences, and HTTP credentials.
+- Full-page, viewport, and element screenshots, with Chromium available for native PDF output and long-tail rendering compatibility.
 - Bounded console events, request/response metadata, response bodies, downloads, and page-scoped JavaScript evaluation.
 
 ### Agent-oriented page understanding
@@ -80,7 +81,7 @@ Project Tendril is inspired by the architectural ideas in Cloudflare's [Kitesurf
 
 ### Web discovery
 
-- Chromium-driven search with Bing, DuckDuckGo, Google, and optional SearXNG adapters.
+- Backend-driven search with Bing, DuckDuckGo, Google, and optional SearXNG adapters.
 - Automatic provider fallback when a provider fails or challenges the browser.
 - Multi-query research with URL deduplication and source-attributed evidence chunks.
 - Bounded, cancellable, robots-aware crawling with same-origin and depth controls.
@@ -90,7 +91,7 @@ Project Tendril is inspired by the architectural ideas in Cloudflare's [Kitesurf
 - MCP over stdio for simple local client ownership.
 - Stateless Streamable HTTP MCP for a shared long-running service.
 - Authenticated REST quick actions and session APIs.
-- Authenticated raw CDP WebSockets for Playwright, Puppeteer, DevTools, and CDP clients.
+- Authenticated raw CDP WebSockets for Chromium sessions. Obscura isolates each CDP connection, so Tendril does not advertise a second raw gateway connection for those sessions.
 - Local observation and control dashboard.
 - Runtime diagnostics, structured logging, profile management, Docker packaging, and CI.
 
@@ -109,9 +110,9 @@ flowchart LR
     B --> S2[Tendril session]
 
     S1 --> P1[Per-session egress proxy]
-    S1 --> R1[Dedicated Chromium process]
+    S1 --> R1[Dedicated Obscura process]
     S2 --> P2[Per-session egress proxy]
-    S2 --> R2[Dedicated Chromium process]
+    S2 --> R2[Dedicated browser process]
 
     P1 --> W[Public web]
     P2 --> W
@@ -121,20 +122,21 @@ For every session, Project Tendril:
 
 1. Creates an ephemeral directory or locks an explicitly named profile.
 2. Starts a loopback forward proxy with that session's network policy.
-3. Launches a separate Chromium process with a random loopback CDP port.
+3. Launches a separate Obscura or Chromium process with a random loopback CDP port.
 4. Connects Playwright over CDP for high-level browser control.
 5. Registers bounded browser, console, network, download, crash, page, and dialog observers.
 6. Terminates the complete process group and deletes ephemeral state when the session closes.
 
-This process-per-session model uses more memory than browser-context pooling, but prevents unrelated agents from sharing cookies, cache, service workers, extension state, or a browser crash boundary.
+This process-per-session model prevents unrelated agents from sharing cookies, cache, storage state, or a browser crash boundary.
 
 See [Architecture](docs/architecture.md) for implementation detail.
 
 ## Requirements
 
 - **Node.js 22.19 or newer**
-- **Chromium, Google Chrome, or Playwright-managed Chromium**
-- A non-root user with a working Chromium sandbox
+- **Obscura 0.2.1** for the default backend; `tendril install-browser` installs a checksum-pinned build
+- **Chromium, Google Chrome, or Playwright-managed Chromium** only when using the fallback backend
+- A non-root user with a working Chromium sandbox when Chromium is selected
 
 Linux is the fully tested v1.0 platform. Project Tendril includes Chromium discovery for Windows and macOS, and CI exercises all three operating systems, but Linux remains the recommended deployment target.
 
@@ -169,7 +171,7 @@ Or run only a stdio MCP server:
 tendril mcp
 ```
 
-Use `--headed` when a visible browser is required:
+Use `--headed` when a visible browser is required. This selects the Chromium fallback because Obscura is currently headless-only:
 
 ```bash
 tendril serve --headed
@@ -265,7 +267,7 @@ Project Tendril 1.0 exposes 18 tools:
 | `browser_act` | Perform ref-based pointer, keyboard, form, drag, scroll, and upload actions |
 | `browser_wait` | Wait for text, a selector, URL, load state, or bounded delay |
 | `browser_extract` | Extract HTML, Markdown, text, links, metadata, forms, or tables |
-| `browser_search` | Search the web through Chromium with provider fallback |
+| `browser_search` | Search the web through the configured backend with provider fallback |
 | `browser_research` | Run multiple searches and gather deduplicated, source-attributed evidence |
 | `browser_crawl` | Start, inspect, retrieve, or cancel a bounded crawl |
 | `browser_capture` | Capture PNG/JPEG screenshots or PDFs |
@@ -317,7 +319,7 @@ curl --fail-with-body --silent --show-error \
   --data '{"profile":"documentation"}'
 ```
 
-The session response includes a browser-level `cdpUrl`. Its query token supports CDP clients that cannot supply custom WebSocket headers.
+Chromium session responses include a browser-level `cdpUrl`. Its query token supports CDP clients that cannot supply custom WebSocket headers. Obscura sessions intentionally omit `cdpUrl` because each new CDP WebSocket creates a different isolated context.
 
 ### Connect Playwright over CDP
 
@@ -359,7 +361,7 @@ An opt-in live quality smoke is available with `TENDRIL_LIVE_SEARXNG_URL=https:/
 - Joinable cancellation, compact status, paginated partial results, and per-page errors.
 - At most 100 retained jobs, with completed jobs expiring after 30 minutes.
 
-Search providers and websites may rate-limit automated access. Project Tendril reports the failure or tries the next configured search provider; it does not apply stealth patches by default.
+Search providers and websites may rate-limit automated access. Project Tendril reports the failure or tries the next configured search provider. Obscura's default stealth mode keeps its browser fingerprint internally consistent, but is not a challenge-bypass mechanism.
 
 ## Challenge handling
 
@@ -367,7 +369,7 @@ When `browser_challenge` detects Cloudflare, Turnstile, reCAPTCHA, hCaptcha, Duc
 
 A human completes the challenge in a headed Chromium window:
 
-1. Start Project Tendril with `--headed`, or create the session with `headless: false`.
+1. Start Project Tendril with `--headed`, or select `browserBackend: "chromium"` and create the session with `headless: false`.
 2. Call `browser_challenge` with `action: "inspect"`.
 3. Call it with `action: "handoff"`; Project Tendril focuses the exact challenged page.
 4. A human completes the challenge in Chromium.
@@ -400,9 +402,12 @@ Configuration precedence is:
 | --- | --- | --- | --- |
 | `host` | `TENDRIL_HOST` | `127.0.0.1` | HTTP bind host |
 | `port` | `TENDRIL_PORT` | `3210` | HTTP listen port |
-| `headless` | `TENDRIL_HEADLESS` | `true` | Launch Chromium without a visible window |
+| `browserBackend` | `TENDRIL_BROWSER_BACKEND` | `obscura` | Browser engine: `obscura` or `chromium` |
+| `headless` | `TENDRIL_HEADLESS` | `true` | Launch without a visible window; Obscura is headless-only |
 | `executablePath` | `TENDRIL_EXECUTABLE_PATH` | auto-detected | Chromium or Chrome executable |
-| `maxSessions` | `TENDRIL_MAX_SESSIONS` | `4` | Maximum concurrent Chromium processes |
+| `obscuraExecutablePath` | `TENDRIL_OBSCURA_PATH` | managed data-directory path | Obscura executable |
+| `obscuraStealth` | `TENDRIL_OBSCURA_STEALTH` | `true` | Enable Obscura's consistent privacy fingerprint |
+| `maxSessions` | `TENDRIL_MAX_SESSIONS` | `4` | Maximum concurrent browser processes |
 | `sessionIdleMs` | `TENDRIL_SESSION_IDLE_MS` | `600000` | Idle-session lifetime |
 | `blockPrivateNetworks` | `TENDRIL_BLOCK_PRIVATE_NETWORKS` | `true` | Block loopback, private, link-local, metadata, and reserved destinations |
 | `allowedHosts` | `TENDRIL_ALLOWED_HOSTS` | `[]` | Comma-separated host allowlist |
@@ -438,11 +443,11 @@ Project Tendril assumes every URL, page, frame, script, download, and MCP argume
 - Loopback, RFC1918 private networks, link-local ranges, multicast, reserved addresses, carrier-grade NAT, and cloud metadata destinations are blocked by default.
 - Redirects and subresources create new proxy requests and are checked again.
 - High-level navigation accepts only public HTTP(S) URLs.
-- Non-proxied WebRTC UDP, QUIC, WebTransport, extensions, and Chromium background networking are disabled.
+- Chromium additionally disables non-proxied WebRTC UDP, QUIC, WebTransport, extensions, and background networking.
 
 ### Profile and filesystem boundary
 
-- Project Tendril never opens the user's normal Chrome or Chromium profile.
+- Project Tendril never opens the user's normal browser profile.
 - Named profiles are opt-in and locked to one live session; deletion acquires the same exclusive lock before removing profile data.
 - Profile locks fail closed after an unclean exit. After verifying that no Tendril process owns the profile, remove the reported `.profile-locks/<name>.lock` file explicitly before restarting it; Tendril never reclaims stale locks automatically because replacing a lock safely cannot be guaranteed portably.
 - Upload paths are canonicalized and restricted to configured workspace roots.
@@ -467,13 +472,12 @@ Build the image:
 docker build -t project-tendril:local .
 ```
 
-Run Chromium as the image's non-root `tendril` user with a read-only root filesystem and the supplied sandbox-compatible seccomp profile:
+Run Obscura as the image's non-root `tendril` user with a read-only root filesystem:
 
 ```bash
 docker run --rm --init \
   --name project-tendril \
   -p 127.0.0.1:3210:3210 \
-  --shm-size 1g \
   --memory 2g \
   --cpus 2 \
   --pids-limit 512 \
@@ -481,14 +485,11 @@ docker run --rm --init \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g \
   --security-opt seccomp=seccomp_profile.json \
   --cap-drop ALL \
-  --cap-add SYS_CHROOT \
   -e TENDRIL_TOKEN="replace-with-a-long-random-token" \
   project-tendril:local
 ```
 
-The included [seccomp profile](seccomp_profile.json) is Docker's default policy with the user-namespace operations required by Chromium's sandbox. `SYS_CHROOT` is the only retained capability and is also required by the sandbox.
-
-Do not add Docker's `no-new-privileges` option: it prevents Chromium's setuid sandbox from starting.
+The image contains a checksum-pinned Obscura 0.2.1 binary and retains no Linux capabilities. The included [seccomp profile](seccomp_profile.json) remains compatible with the Chromium fallback if you build a custom image containing Chromium.
 
 Persist named profiles and the generated HTTP token:
 
@@ -498,7 +499,6 @@ docker volume create project-tendril-data
 docker run --rm --init \
   --name project-tendril \
   -p 127.0.0.1:3210:3210 \
-  --shm-size 1g \
   --memory 2g \
   --cpus 2 \
   --pids-limit 512 \
@@ -506,7 +506,6 @@ docker run --rm --init \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g \
   --security-opt seccomp=seccomp_profile.json \
   --cap-drop ALL \
-  --cap-add SYS_CHROOT \
   -v project-tendril-data:/data \
   project-tendril:local
 ```
@@ -533,11 +532,12 @@ Useful commands:
 | `npm run typecheck` | Type-check without emitting files |
 | `npm test` | Run the integration test suite once |
 | `npm run test:watch` | Run tests in watch mode |
+| `npm run benchmark:backends` | Compare Obscura and Chromium on deterministic local fixtures |
 | `npm run build` | Compile ESM JavaScript and declarations into `dist/` |
-| `node dist/cli.js doctor` | Check Node.js, Chromium, directories, and sandbox prerequisites |
+| `node dist/cli.js doctor` | Check Node.js, the configured backend, directories, and launch prerequisites |
 | `npm pack --dry-run` | Inspect the release package |
 
-The integration suite launches real Chromium and covers:
+The integration suite launches real Chromium for the compatibility suite and a pinned Obscura binary in its dedicated CI job. It covers:
 
 - Semantic snapshots and ref-based actions.
 - MCP server discovery and browser control.
@@ -552,13 +552,13 @@ The integration suite launches real Chromium and covers:
 ```text
 Project-Tendril/
 ├── src/
-│   ├── browser/          Chromium, sessions, snapshots, extraction, search, crawl
+│   ├── browser/          Backends, sessions, snapshots, extraction, search, crawl
 │   ├── security/         Network policy and per-session egress proxy
 │   ├── server/           MCP, HTTP, CDP gateway, and dashboard
 │   ├── cli.ts            Command-line entry point
 │   ├── config.ts         Defaults, file, and environment configuration
 │   └── runtime.ts        Shared service composition
-├── tests/                Real-Chromium integration tests
+├── tests/                Chromium and Obscura integration tests
 ├── docs/                 Architecture and security documentation
 ├── .github/              CI, security scanning, releases, and community files
 ├── Dockerfile
@@ -568,14 +568,14 @@ Project-Tendril/
 
 ## Troubleshooting
 
-### No Chromium executable found
+### No Obscura executable found
 
 ```bash
 tendril install-browser
 tendril doctor
 ```
 
-Or set `TENDRIL_EXECUTABLE_PATH` to a Chromium or Google Chrome executable.
+Or set `TENDRIL_OBSCURA_PATH` to an Obscura executable. For Chromium instead, set `TENDRIL_BROWSER_BACKEND=chromium` and optionally `TENDRIL_EXECUTABLE_PATH`.
 
 ### Chromium refuses to start as root
 
@@ -631,7 +631,7 @@ npm test
 npm run build
 ```
 
-Changes that add CAPTCHA solving, stealth/fingerprint evasion, telemetry, implicit access to normal browser profiles, or private-network access by default are outside the project's scope.
+Changes that add CAPTCHA solving, access-control or fingerprint-evasion behavior, telemetry, implicit access to normal browser profiles, or private-network access by default are outside the project's scope.
 
 ## License
 

@@ -252,7 +252,7 @@ export class BrowserManager {
     return session;
   }
 
-  async list(cdpUrlFor?: (session: TendrilSession) => string): Promise<SessionInfo[]> {
+  async list(cdpUrlFor?: (session: TendrilSession) => string | undefined): Promise<SessionInfo[]> {
     return Promise.all([...this.sessions.values()].map((session) => session.info(cdpUrlFor?.(session))));
   }
 

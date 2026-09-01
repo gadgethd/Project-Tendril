@@ -13,6 +13,8 @@ export interface ElementTarget {
   readonly frame: Frame;
   readonly ownerDocument: JSHandle<Document>;
   readonly element: ElementHandle<SVGElement | HTMLElement>;
+  readonly selector?: string;
+  readonly identityToken?: string;
   readonly fingerprint: string;
   readonly snapshotId: string;
 }
@@ -261,10 +263,10 @@ interface FrameSnapshot {
   truncated: boolean;
 }
 
-async function snapshotFrame(frame: Frame, maxDomNodes: number, maxRefs: number, maxSemanticChars: number): Promise<FrameSnapshot> {
+async function snapshotFrame(frame: Frame, maxDomNodes: number, maxRefs: number, maxSemanticChars: number, selectorPrefix?: string): Promise<FrameSnapshot> {
   const payload = await frame.locator('body').evaluateHandle(
     (body, snapshotOptions) => {
-      const { redactedValue, fingerprintOptions, maxDomNodes, maxDomDepth, maxRefs } = snapshotOptions;
+      const { redactedValue, fingerprintOptions, maxDomNodes, maxDomDepth, maxRefs, selectorPrefix } = snapshotOptions;
       const targets: Element[] = [];
       let visitedNodes = 0;
       let auxiliaryScanRemaining = maxDomNodes * 8;
@@ -558,6 +560,10 @@ async function snapshotFrame(frame: Frame, maxDomNodes: number, maxRefs: number,
             if (fingerprint.length <= semanticCharsRemaining) {
               semanticCharsRemaining -= fingerprint.length;
               node.targetIndex = targets.push(element) - 1;
+              if (selectorPrefix) {
+                const token = `${selectorPrefix}:${node.targetIndex}`;
+                element.setAttribute('data-tendril-ref', token);
+              }
               node.fingerprint = fingerprint;
             } else truncated = true;
           } else truncated = true;
@@ -603,6 +609,7 @@ async function snapshotFrame(frame: Frame, maxDomNodes: number, maxRefs: number,
       maxRefs,
       maxSemanticChars,
       sensitiveControlPattern: SENSITIVE_CONTROL_PATTERN_SOURCE,
+      selectorPrefix,
     },
   );
 
@@ -717,6 +724,7 @@ export async function createSnapshot(options: {
   baselineSnapshotId?: string;
   compact?: boolean;
   maxDepth?: number;
+  markTargets?: boolean;
 }): Promise<SnapshotCreation> {
   const snapshotId = newId('snap');
   const refs = new Map<ElementRef, ElementTarget>();
@@ -748,7 +756,8 @@ export async function createSnapshot(options: {
       let rawNodes: RawNode[];
       let elements: Array<ElementHandle<SVGElement | HTMLElement> | undefined> = [];
       try {
-        const captured = await snapshotFrame(frame, remainingDomNodes, remainingRefs, remainingSemanticChars);
+        const selectorPrefix = options.markTargets ? `${snapshotId}:${frameIndex}` : undefined;
+        const captured = await snapshotFrame(frame, remainingDomNodes, remainingRefs, remainingSemanticChars, selectorPrefix);
         rawNodes = captured.nodes;
         elements = captured.elements;
         documents.push(captured.document);
@@ -780,6 +789,8 @@ export async function createSnapshot(options: {
             frame,
             ownerDocument: documents[documents.length - 1]!,
             element,
+            ...(options.markTargets ? { selector: `[data-tendril-ref="${snapshotId}:${frameIndex}:${raw.targetIndex}"]` } : {}),
+            ...(options.markTargets ? { identityToken: `${snapshotId}:${frameIndex}:${raw.targetIndex}` } : {}),
             fingerprint: raw.fingerprint,
             snapshotId,
           });

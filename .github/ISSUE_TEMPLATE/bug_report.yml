@@ -37,8 +37,8 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Operating system, Node.js version, Chromium version, and whether this is native or Docker.
-      placeholder: "Ubuntu 24.04, Node.js 22.19.0, Chromium 140, native"
+      description: Operating system, Node.js version, selected backend and version, and whether this is native or Docker.
+      placeholder: "Ubuntu 24.04, Node.js 22.19.0, Obscura 0.2.1, native"
     validations:
       required: true
 

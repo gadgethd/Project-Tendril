@@ -14,7 +14,7 @@ Describe changes to browser isolation, networking, profiles, credentials, file a
 - [ ] I added or updated tests for behavioral changes.
 - [ ] I updated documentation and the changelog when appropriate.
 - [ ] I did not add generated secrets, cookies, profiles, downloads, or sensitive browsing data.
-- [ ] This change does not add CAPTCHA solving, stealth/fingerprint evasion, implicit normal-profile access, telemetry, or private-network access by default.
+- [ ] This change does not add CAPTCHA solving, access-control evasion, implicit normal-profile access, telemetry, or private-network access by default.
 
 ## Related issues
 

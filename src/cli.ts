@@ -4,6 +4,7 @@ import { readdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Command } from 'commander';
+import { installObscura, OBSCURA_VERSION } from './browser/install-obscura.js';
 import { acquireProfileFileLock } from './browser/profile-lock.js';
 import { validateProfileName } from './browser/profile-name.js';
 import { loadConfig } from './config.js';
@@ -18,7 +19,7 @@ const program = new Command();
 
 program
   .name('tendril')
-  .description('Local agent-first Chromium browser with MCP, REST, and CDP')
+  .description('Local agent-first browser runtime with Obscura and Chromium backends, MCP, REST, and CDP')
   .version(VERSION)
   .option('-c, --config <path>', 'configuration JSON path');
 
@@ -36,14 +37,14 @@ program
       overrides: {
         ...(options.port !== undefined ? { port: options.port } : {}),
         ...(options.host ? { host: options.host } : {}),
-        ...(options.headed ? { headless: false } : {}),
+        ...(options.headed ? { browserBackend: 'chromium' as const, headless: false } : {}),
         ...(options.allowPrivateNetwork ? { blockPrivateNetworks: false } : {}),
       },
     });
     const runtime = await createRuntime(config);
     const httpServer = await startHttpServer({ ...runtime });
     process.stdout.write(
-      `Project Tendril 1.1.0\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${formatUrlAuthority(advertisedHost(config.host), httpServer.port)}/mcp\n`,
+      `Project Tendril ${VERSION}\nDashboard: ${httpServer.dashboardUrl}\nMCP: http://${formatUrlAuthority(advertisedHost(config.host), httpServer.port)}/mcp\n`,
     );
     await waitForShutdown(async () => {
       await httpServer.close();
@@ -61,7 +62,7 @@ program
     const config = await loadConfig({
       configPath: root.config,
       overrides: {
-        ...(options.headed ? { headless: false } : {}),
+        ...(options.headed ? { browserBackend: 'chromium' as const, headless: false } : {}),
         ...(options.allowPrivateNetwork ? { blockPrivateNetworks: false } : {}),
       },
     });
@@ -72,7 +73,7 @@ program
 
 program
   .command('doctor')
-  .description('Check runtime, Chromium, directories, and sandbox prerequisites')
+  .description('Check runtime, configured browser backend, directories, and prerequisites')
   .action(async () => {
     const root = program.opts<{ config?: string }>();
     const config = await loadConfig({ configPath: root.config });
@@ -83,8 +84,14 @@ program
 
 program
   .command('install-browser')
-  .description('Install Playwright-managed Chromium')
+  .description('Install the configured browser backend')
   .action(async () => {
+    const config = await loadConfig({ configPath: program.opts<{ config?: string }>().config });
+    if (config.browserBackend === 'obscura') {
+      const installed = await installObscura(config.obscuraExecutablePath!);
+      process.stdout.write(`Installed Obscura ${OBSCURA_VERSION} at ${installed}\n`);
+      return;
+    }
     const require = createRequire(import.meta.url);
     const cli = require.resolve('playwright/cli');
     const child = spawn(process.execPath, [cli, 'install', 'chromium'], { stdio: 'inherit' });

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { findChromium } from './browser/chromium.js';
+import { findObscura } from './browser/obscura.js';
 import { createRuntime } from './runtime.js';
 import type { SearchProviderName, TendrilConfig } from './types.js';
 import { ensureDir } from './util.js';
@@ -33,12 +34,13 @@ export async function runDoctor(config: TendrilConfig, environment: NodeJS.Proce
   checks.push({ check: 'Node.js', ok: nodeMajor >= 22, detail: process.version });
 
   let executable: string | undefined;
+  const browserName = config.browserBackend === 'obscura' ? 'Obscura' : 'Chromium';
   try {
-    executable = await findChromium(config.executablePath);
+    executable = config.browserBackend === 'obscura' ? await findObscura(config.obscuraExecutablePath) : await findChromium(config.executablePath);
     const { stdout, stderr } = await execFileAsync(executable, ['--version'], { timeout: 10_000 });
-    checks.push({ check: 'Chromium binary', ok: true, detail: `${executable} (${(stdout || stderr).trim()})` });
+    checks.push({ check: `${browserName} binary`, ok: true, detail: `${executable} (${(stdout || stderr).trim()})` });
   } catch (error) {
-    checks.push({ check: 'Chromium binary', ok: false, detail: errorDetail(error) });
+    checks.push({ check: `${browserName} binary`, ok: false, detail: errorDetail(error) });
   }
 
   try {
@@ -59,35 +61,44 @@ export async function runDoctor(config: TendrilConfig, environment: NodeJS.Proce
 
   const noSandboxOverride = environment.TENDRIL_ALLOW_NO_SANDBOX === 'true';
   const runningAsRoot = process.getuid?.() === 0;
-  if (noSandboxOverride) {
+  if (config.browserBackend === 'chromium' && noSandboxOverride) {
     checks.push({
       check: 'Chromium sandbox launch',
       ok: false,
       detail: 'TENDRIL_ALLOW_NO_SANDBOX=true disables the browser sandbox and is not production-ready',
     });
-  } else if (runningAsRoot) {
+  } else if (config.browserBackend === 'chromium' && runningAsRoot) {
     checks.push({
       check: 'Chromium sandbox launch',
       ok: false,
       detail: 'Running as root is refused; use the non-root container user or an unprivileged account',
     });
   } else if (!executable) {
-    checks.push({ check: 'Chromium sandbox launch', ok: false, detail: 'Chromium binary check failed' });
+    checks.push({ check: `${browserName} launch`, ok: false, detail: `${browserName} binary check failed` });
   } else {
     let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     try {
-      runtime = await createRuntime({ ...config, executablePath: executable, headless: true, maxSessions: 1 });
+      runtime = await createRuntime({
+        ...config,
+        ...(config.browserBackend === 'obscura' ? { obscuraExecutablePath: executable } : { executablePath: executable }),
+        headless: true,
+        maxSessions: 1,
+      });
       const session = await runtime.manager.create({ headless: true });
       try {
         await session.setContent('<title>Tendril doctor</title><main>Sandbox launch probe</main>');
         const health = await session.health();
-        if (!health.alive) throw new Error('Chromium process exited during the launch probe');
+        if (!health.alive) throw new Error(`${browserName} process exited during the launch probe`);
       } finally {
         await runtime.manager.close(session.id);
       }
-      checks.push({ check: 'Chromium sandbox launch', ok: true, detail: 'Sandboxed create, render, health, and close probe passed' });
+      checks.push({
+        check: `${browserName} launch`,
+        ok: true,
+        detail: `${config.browserBackend === 'chromium' ? 'Sandboxed ' : ''}create, render, health, and close probe passed`,
+      });
     } catch (error) {
-      checks.push({ check: 'Chromium sandbox launch', ok: false, detail: errorDetail(error) });
+      checks.push({ check: `${browserName} launch`, ok: false, detail: errorDetail(error) });
     } finally {
       if (runtime) {
         try {

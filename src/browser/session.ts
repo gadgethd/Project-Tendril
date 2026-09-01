@@ -1,7 +1,7 @@
 import { copyFile, lstat, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import type { BrowserContext, Dialog, Download, Frame, JSHandle, Page, Request, Response } from 'playwright';
+import type { BrowserContext, Dialog, Download, Frame, JSHandle, Locator, Page, Request, Response } from 'playwright';
 import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
 import { NetworkPolicy } from '../security/network-policy.js';
@@ -33,7 +33,8 @@ import {
   SENSITIVE_URL_KEY_PATTERN_SOURCE,
   withTimeout,
 } from '../util.js';
-import { type ChromiumProcess, launchChromium } from './chromium.js';
+import { launchBrowser } from './backend.js';
+import type { BrowserProcess } from './chromium.js';
 import { mergeInjectionWarnings, SENSITIVE_CONTROL_PATTERN_SOURCE } from './content-safety.js';
 import { extractForms, extractPage, extractTables } from './extract.js';
 import {
@@ -48,7 +49,7 @@ import {
 } from './snapshot.js';
 
 interface SessionCreateDependencies {
-  launch?: typeof launchChromium;
+  launch?: typeof launchBrowser;
   proxy?: EgressProxy;
 }
 
@@ -185,7 +186,9 @@ export class TendrilSession {
   readonly createOptions: SessionCreateOptions;
   readonly userDataDir: string;
   readonly proxy: EgressProxy;
-  readonly chromium: ChromiumProcess;
+  /** @deprecated Prefer browserProcess for backend-neutral code. */
+  readonly chromium: BrowserProcess;
+  readonly browserProcess: BrowserProcess;
   readonly consoleEntries: ConsoleEntry[] = [];
   readonly networkEntries: NetworkEntry[] = [];
   readonly downloads: DownloadEntry[] = [];
@@ -211,7 +214,7 @@ export class TendrilSession {
     userDataDir: string,
     proxy: EgressProxy,
     private readonly networkPolicy: NetworkPolicy,
-    chromiumProcess: ChromiumProcess,
+    browserProcess: BrowserProcess,
     headless: boolean,
     private readonly config: TendrilConfig,
     private readonly logger: Logger,
@@ -224,9 +227,10 @@ export class TendrilSession {
     const ownedSessionRoot = profile ? pathWithinOwnedRoot(config.dataDir, 'profiles') : pathWithinOwnedRoot(config.runtimeDir, 'sessions');
     this.userDataDir = assertPathWithinOwnedRoot(userDataDir, ownedSessionRoot, 'Browser session directory');
     this.proxy = proxy;
-    this.chromium = chromiumProcess;
-    for (const page of chromiumProcess.context.pages()) this.attachPage(page);
-    chromiumProcess.context.on('page', (page) => this.attachPage(page));
+    this.chromium = browserProcess;
+    this.browserProcess = browserProcess;
+    for (const page of browserProcess.context.pages()) this.attachPage(page);
+    browserProcess.context.on('page', (page) => this.attachPage(page));
   }
 
   static async create(
@@ -246,11 +250,11 @@ export class TendrilSession {
       blockedHosts: options.config.blockedHosts,
     });
     const proxy = dependencies.proxy ?? new EgressProxy(policy, options.logger);
-    let chromiumProcess: ChromiumProcess | undefined;
+    let browserProcess: BrowserProcess | undefined;
     try {
       await proxy.start();
-      chromiumProcess = await (dependencies.launch ?? launchChromium)({
-        executablePath: options.config.executablePath,
+      browserProcess = await (dependencies.launch ?? launchBrowser)({
+        config: options.config,
         userDataDir: options.userDataDir,
         proxyUrl: proxy.url(),
         headless: options.createOptions.headless ?? options.config.headless,
@@ -258,8 +262,8 @@ export class TendrilSession {
         locale: options.createOptions.locale,
         logger: options.logger,
       });
-      chromiumProcess.context.setDefaultTimeout(options.config.actionTimeoutMs);
-      chromiumProcess.context.setDefaultNavigationTimeout(options.config.navigationTimeoutMs);
+      browserProcess.context.setDefaultTimeout(options.config.actionTimeoutMs);
+      browserProcess.context.setDefaultNavigationTimeout(options.config.navigationTimeoutMs);
       if (options.createOptions.timezoneId) {
         options.logger.warn('Timezone can only be set before Chromium launch and is not currently applied', { timezoneId: options.createOptions.timezoneId });
       }
@@ -270,7 +274,7 @@ export class TendrilSession {
         options.userDataDir,
         proxy,
         policy,
-        chromiumProcess,
+        browserProcess,
         options.createOptions.headless ?? options.config.headless,
         options.config,
         options.logger,
@@ -278,9 +282,9 @@ export class TendrilSession {
     } catch (error) {
       const cleanupFailures: unknown[] = [];
       let browserTerminationVerified = !(error instanceof TendrilError && error.details?.browserTerminationVerified === false);
-      if (chromiumProcess) {
+      if (browserProcess) {
         try {
-          await chromiumProcess.close();
+          await browserProcess.close();
         } catch (cleanupError) {
           browserTerminationVerified = false;
           cleanupFailures.push(cleanupError);
@@ -606,6 +610,7 @@ export class TendrilSession {
   async info(cdpPublicUrl?: string): Promise<SessionInfo> {
     const info: SessionInfo = {
       id: this.id,
+      backend: this.browserProcess.backend,
       ephemeral: this.ephemeral,
       headless: this.headless,
       createdAt: this.createdAt.toISOString(),
@@ -711,7 +716,18 @@ export class TendrilSession {
   async setContent(html: string, pageId?: string): Promise<{ url: string; title: string }> {
     const page = this.currentPage(pageId);
     await this.invalidatePageRefs(this.pageId(page));
-    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    if (this.browserProcess.backend === 'obscura') {
+      // Obscura does not currently emit every Chromium lifecycle event that
+      // Playwright's setContent waits for. The equivalent DOM operation is
+      // synchronous and keeps the session usable through standard CDP calls.
+      await page.evaluate((content) => {
+        document.open();
+        document.write(content);
+        document.close();
+      }, html);
+    } else {
+      await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    }
     return { url: page.url(), title: await page.title() };
   }
 
@@ -911,6 +927,7 @@ export class TendrilSession {
       baselineSnapshotId: baseline?.snapshotId,
       compact: options.compact,
       maxDepth: options.maxDepth,
+      markTargets: this.browserProcess.backend === 'obscura',
     });
     const stored = await this.storeSnapshot({
       result: created.result,
@@ -952,132 +969,232 @@ export class TendrilSession {
     if (!page.frames().includes(frame) || frame.url() !== target.frameUrl) {
       return stale(`Frame for ${ref} changed; take a new snapshot`);
     }
-    let live: { connected: boolean; sameDocument: boolean; fingerprint: string };
     try {
-      live = await target.element.evaluate(
-        (element, options) => {
-          const { fingerprintOptions, ownerDocument } = options;
-          const normalize = (value: string | null | undefined): string =>
-            (value ?? '')
-              .slice(0, fingerprintOptions.maxTextChars * 4)
-              .replace(/\s+/g, ' ')
-              .trim()
-              .slice(0, fingerprintOptions.maxTextChars);
-          const escapeIdentifier = (value: string): string =>
-            typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
-          const findReferenced = (candidate: Element, id: string): Element | null => {
-            const root = candidate.getRootNode();
-            if ('getElementById' in root && typeof root.getElementById === 'function') return root.getElementById(id);
-            return candidate.ownerDocument.getElementById(id) ?? (root as Document | ShadowRoot).querySelector?.(`#${escapeIdentifier(id)}`) ?? null;
-          };
-          let remainingNodes = 20_000;
-          const boundedNodeText = (candidate: Element, maxChars = fingerprintOptions.maxTextChars * 4): string => {
-            const parts: string[] = [];
-            const pending: Node[] = [];
-            let current: Node | null = candidate.firstChild;
-            let chars = 0;
-            while (current && remainingNodes > 0 && chars < maxChars) {
-              const node: Node = current;
-              const sibling: Node | null = node.nextSibling;
-              remainingNodes -= 1;
-              if (node.nodeType === 3) {
-                const text = (node.textContent ?? '').slice(0, maxChars - chars);
-                parts.push(text);
-                chars += text.length;
-                current = sibling ?? pending.pop() ?? null;
-                continue;
-              }
-              if (node instanceof Element && node.firstChild) {
-                if (sibling) pending.push(sibling);
-                current = node.firstChild;
-              } else current = sibling ?? pending.pop() ?? null;
+      const evaluator = (this.browserProcess.backend === 'obscura' && target.selector
+        ? frame.locator(target.selector).first()
+        : target.element) as unknown as Locator;
+      const validationOptions =
+        this.browserProcess.backend === 'obscura'
+          ? JSON.stringify({
+              fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
+              expectedFingerprint: target.fingerprint,
+              identityToken: target.identityToken,
+            })
+          : {
+              fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
+              expectedElement: target.element,
+              expectedFingerprint: target.fingerprint,
+              identityToken: target.identityToken,
+              ownerDocument: target.ownerDocument,
+            };
+      const live = await evaluator.evaluate((element, rawOptions) => {
+        const options = (typeof rawOptions === 'string' ? JSON.parse(rawOptions) : rawOptions) as {
+          fingerprintOptions: typeof ELEMENT_FINGERPRINT_OPTIONS;
+          expectedElement?: Element;
+          expectedFingerprint: string;
+          identityToken?: string;
+          ownerDocument?: Document;
+        };
+        const { fingerprintOptions } = options;
+        const ownerDocument = options.ownerDocument ?? element.ownerDocument;
+        const normalize = (value: string | null | undefined): string =>
+          (value ?? '')
+            .slice(0, fingerprintOptions.maxTextChars * 4)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, fingerprintOptions.maxTextChars);
+        const escapeIdentifier = (value: string): string =>
+          typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
+        const findReferenced = (candidate: Element, id: string): Element | null => {
+          const root = candidate.getRootNode();
+          if ('getElementById' in root && typeof root.getElementById === 'function') return root.getElementById(id);
+          return candidate.ownerDocument.getElementById(id) ?? (root as Document | ShadowRoot).querySelector?.(`#${escapeIdentifier(id)}`) ?? null;
+        };
+        let remainingNodes = 20_000;
+        const boundedNodeText = (candidate: Element, maxChars = fingerprintOptions.maxTextChars * 4): string => {
+          const parts: string[] = [];
+          const pending: Node[] = [];
+          let current: Node | null = candidate.firstChild;
+          let chars = 0;
+          while (current && remainingNodes > 0 && chars < maxChars) {
+            const node: Node = current;
+            const sibling: Node | null = node.nextSibling;
+            remainingNodes -= 1;
+            if (node.nodeType === 3) {
+              const text = (node.textContent ?? '').slice(0, maxChars - chars);
+              parts.push(text);
+              chars += text.length;
+              current = sibling ?? pending.pop() ?? null;
+              continue;
             }
-            return normalize(parts.join(' '));
-          };
-          const referencedText = (candidate: Element, attribute: string): string => {
-            const ids = (candidate.getAttribute(attribute) ?? '')
-              .slice(0, fingerprintOptions.maxTextChars * 4)
-              .split(/\s+/)
-              .filter(Boolean);
-            const parts: string[] = [];
-            let remainingChars = fingerprintOptions.maxTextChars * 4;
-            for (const id of ids) {
-              const referenced = findReferenced(candidate, id.slice(0, 500));
-              if (!referenced || remainingChars <= 0) continue;
-              const text = boundedNodeText(referenced, remainingChars);
-              if (text) {
-                parts.push(text);
-                remainingChars -= text.length;
-              }
-            }
-            return normalize(parts.join(' '));
-          };
-          const tag = element.tagName.toLowerCase();
-          const type = (element.getAttribute('type') ?? '').slice(0, 100).toLowerCase();
-          const labels: string[] = [];
-          const elementLabels = 'labels' in element ? (element.labels as NodeListOf<HTMLLabelElement> | null) : null;
-          if (elementLabels) {
-            for (let index = 0; index < Math.min(elementLabels.length, 50); index += 1) {
-              const label = elementLabels[index];
-              if (label) labels.push(boundedNodeText(label));
+            if (node instanceof Element && node.firstChild) {
+              if (sibling) pending.push(sibling);
+              current = node.firstChild;
+            } else current = sibling ?? pending.pop() ?? null;
+          }
+          return normalize(parts.join(' '));
+        };
+        const referencedText = (candidate: Element, attribute: string): string => {
+          const ids = (candidate.getAttribute(attribute) ?? '')
+            .slice(0, fingerprintOptions.maxTextChars * 4)
+            .split(/\s+/)
+            .filter(Boolean);
+          const parts: string[] = [];
+          let remainingChars = fingerprintOptions.maxTextChars * 4;
+          for (const id of ids) {
+            const referenced = findReferenced(candidate, id.slice(0, 500));
+            if (!referenced || remainingChars <= 0) continue;
+            const text = boundedNodeText(referenced, remainingChars);
+            if (text) {
+              parts.push(text);
+              remainingChars -= text.length;
             }
           }
-          const semanticValue =
-            tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type)
-              ? (element as HTMLInputElement).value
-              : tag === 'option'
-                ? (element as HTMLOptionElement).value
-                : '';
-          const parts: Array<string | boolean> = [
-            'semantic-v2',
-            tag,
-            ...fingerprintOptions.attributes.map((attribute) => normalize(element.getAttribute(attribute))),
-            ...fingerprintOptions.referenceAttributes.map((attribute) => referencedText(element, attribute)),
-            boundedNodeText(element),
-            normalize(labels.join(' ')),
-            normalize(semanticValue),
-            'disabled' in element && Boolean(element.disabled),
-            'checked' in element && Boolean(element.checked),
-            'selected' in element && Boolean(element.selected),
-            'readOnly' in element && Boolean(element.readOnly),
-            'required' in element && Boolean(element.required),
-            'isContentEditable' in element && Boolean(element.isContentEditable),
-            (element as HTMLElement).hidden,
-          ];
-          let primary = 0x811c9dc5;
-          let secondary = 0x9e3779b9;
-          let length = 0;
-          for (const rawPart of parts) {
-            const part = String(rawPart).slice(0, fingerprintOptions.maxComponentChars);
-            length += part.length;
-            for (let index = 0; index <= part.length; index += 1) {
-              const code = index === part.length ? 0xffff : part.charCodeAt(index);
-              primary = Math.imul(primary ^ code, 0x01000193) >>> 0;
-              secondary = Math.imul(secondary ^ code, 0x85ebca6b) >>> 0;
-            }
+          return normalize(parts.join(' '));
+        };
+        const tag = element.tagName.toLowerCase();
+        const type = (element.getAttribute('type') ?? '').slice(0, 100).toLowerCase();
+        const labels: string[] = [];
+        const elementLabels = 'labels' in element ? (element.labels as NodeListOf<HTMLLabelElement> | null) : null;
+        if (elementLabels) {
+          for (let index = 0; index < Math.min(elementLabels.length, 50); index += 1) {
+            const label = elementLabels[index];
+            if (label) labels.push(boundedNodeText(label));
           }
-          const fingerprint = `semantic-v3:${primary.toString(16).padStart(8, '0')}:${secondary.toString(16).padStart(8, '0')}:${length}`.slice(
-            0,
-            fingerprintOptions.maxFingerprintChars,
-          );
-          return {
-            connected: element.isConnected,
-            sameDocument: element.ownerDocument === ownerDocument,
-            fingerprint,
-          };
-        },
-        {
-          fingerprintOptions: ELEMENT_FINGERPRINT_OPTIONS,
-          ownerDocument: target.ownerDocument,
-        },
-      );
+        }
+        const semanticValue =
+          tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type)
+            ? (element as HTMLInputElement).value
+            : tag === 'option'
+              ? (element as HTMLOptionElement).value
+              : '';
+        const parts: Array<string | boolean> = [
+          'semantic-v2',
+          tag,
+          ...fingerprintOptions.attributes.map((attribute) => normalize(element.getAttribute(attribute))),
+          ...fingerprintOptions.referenceAttributes.map((attribute) => referencedText(element, attribute)),
+          boundedNodeText(element),
+          normalize(labels.join(' ')),
+          normalize(semanticValue),
+          'disabled' in element && Boolean(element.disabled),
+          'checked' in element && Boolean(element.checked),
+          'selected' in element && Boolean(element.selected),
+          'readOnly' in element && Boolean(element.readOnly),
+          'required' in element && Boolean(element.required),
+          'isContentEditable' in element && Boolean(element.isContentEditable),
+          (element as HTMLElement).hidden,
+        ];
+        let primary = 0x811c9dc5;
+        let secondary = 0x9e3779b9;
+        let length = 0;
+        for (const rawPart of parts) {
+          const part = String(rawPart).slice(0, fingerprintOptions.maxComponentChars);
+          length += part.length;
+          for (let index = 0; index <= part.length; index += 1) {
+            const code = index === part.length ? 0xffff : part.charCodeAt(index);
+            primary = Math.imul(primary ^ code, 0x01000193) >>> 0;
+            secondary = Math.imul(secondary ^ code, 0x85ebca6b) >>> 0;
+          }
+        }
+        const fingerprint = `semantic-v3:${primary.toString(16).padStart(8, '0')}:${secondary.toString(16).padStart(8, '0')}:${length}`.slice(
+          0,
+          fingerprintOptions.maxFingerprintChars,
+        );
+        const sameIdentity = options.identityToken ? element.getAttribute('data-tendril-ref') === options.identityToken : element === options.expectedElement;
+        return {
+          connected: element.isConnected,
+          sameDocument: element.ownerDocument === ownerDocument,
+          sameIdentity,
+          fingerprint,
+        };
+      }, validationOptions);
+      if (!live.connected || !live.sameDocument || !live.sameIdentity || live.fingerprint !== target.fingerprint) {
+        return stale(`Element reference ${ref} is detached, replaced, or changed; take a new snapshot`);
+      }
     } catch (error) {
       return stale(`Element reference ${ref} is detached or replaced; take a new snapshot`, error);
     }
-    if (!live.connected || !live.sameDocument || live.fingerprint !== target.fingerprint) {
-      return stale(`Element reference ${ref} is detached, replaced, or changed; take a new snapshot`);
-    }
     return { page, frame, target };
+  }
+
+  private async actInObscura(
+    element: Locator,
+    options: {
+      action: Exclude<BrowserAction, 'drag' | 'upload' | 'press'>;
+      text?: string;
+      value?: string;
+      values?: string[];
+      deltaX?: number;
+      deltaY?: number;
+    },
+  ): Promise<void> {
+    switch (options.action) {
+      case 'click':
+        await element.evaluate((node) => (node as HTMLElement).click());
+        break;
+      case 'double_click':
+        await element.evaluate((node) => {
+          const target = node as HTMLElement;
+          target.click();
+          target.click();
+          target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+        });
+        break;
+      case 'hover':
+        await element.evaluate((node) => {
+          const target = node as HTMLElement;
+          target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+          target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
+        });
+        break;
+      case 'focus':
+        await element.evaluate((node) => (node as HTMLElement).focus());
+        break;
+      case 'fill':
+      case 'type':
+        await element.evaluate(
+          (node, serialized) => {
+            const [action, text] = JSON.parse(serialized) as ['fill' | 'type', string];
+            const target = node as HTMLInputElement | HTMLTextAreaElement;
+            target.focus();
+            target.value = action === 'fill' ? text : `${target.value}${text}`;
+            target.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            if (action === 'fill') target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+          },
+          JSON.stringify([options.action, options.text ?? '']),
+        );
+        break;
+      case 'select':
+        await element.evaluate(
+          (node, serialized) => {
+            const values = new Set(JSON.parse(serialized) as string[]);
+            const target = node as HTMLSelectElement;
+            for (const option of target.options) option.selected = values.has(option.value) || values.has(option.label);
+            target.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+          },
+          JSON.stringify(options.value === undefined ? (options.values ?? []) : [options.value]),
+        );
+        break;
+      case 'check':
+      case 'uncheck':
+        await element.evaluate((node, checked) => {
+          const target = node as HTMLInputElement;
+          target.checked = checked;
+          target.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+          target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        }, options.action === 'check');
+        break;
+      case 'scroll':
+        await element.evaluate(
+          (node, serialized) => {
+            const [deltaX, deltaY] = JSON.parse(serialized) as [number, number];
+            (node as HTMLElement).scrollBy(deltaX, deltaY);
+          },
+          JSON.stringify([options.deltaX ?? 0, options.deltaY ?? 600]),
+        );
+        break;
+    }
   }
 
   async act(options: {
@@ -1108,67 +1225,90 @@ export class TendrilSession {
     }
     if (!options.ref) throw new TendrilError('STALE_ELEMENT_REF', 'ref is required for this action');
     const { page, target } = await this.resolveTarget(options.ref);
+    const obscuraLocator = target.selector ? target.frame.locator(target.selector).first() : undefined;
     let destinationPageId: string | undefined;
     try {
-      switch (options.action) {
-        case 'click':
-          await target.element.click();
-          break;
-        case 'double_click':
-          await target.element.dblclick();
-          break;
-        case 'hover':
-          await target.element.hover();
-          break;
-        case 'focus':
-          await target.element.focus();
-          break;
-        case 'fill':
-          await target.element.fill(options.text ?? '');
-          break;
-        case 'type':
-          await target.element.fill('');
-          await target.element.type(options.text ?? '');
-          break;
-        case 'select':
-          if (options.value !== undefined) await target.element.selectOption({ label: options.value });
-          else await target.element.selectOption(options.values ?? []);
-          break;
-        case 'check':
-          await target.element.check();
-          break;
-        case 'uncheck':
-          await target.element.uncheck();
-          break;
-        case 'press':
-          await target.element.press(options.key ?? 'Enter');
-          break;
-        case 'scroll':
-          await target.element.evaluate((element, delta) => element.scrollBy(delta.x, delta.y), { x: options.deltaX ?? 0, y: options.deltaY ?? 600 });
-          break;
-        case 'drag': {
-          if (!options.targetRef) throw new TendrilError('STALE_ELEMENT_REF', 'targetRef is required for drag');
-          const destination = await this.resolveTarget(options.targetRef);
-          if (destination.page !== page) throw new TendrilError('STALE_ELEMENT_REF', 'Drag refs must belong to the same page');
-          destinationPageId = destination.target.pageId;
-          const [sourceBox, targetBox] = await Promise.all([target.element.boundingBox(), destination.target.element.boundingBox()]);
-          if (!sourceBox || !targetBox) throw new TendrilError('STALE_ELEMENT_REF', 'Drag source or destination is no longer visible; take a new snapshot');
-          await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
-          await page.mouse.down();
-          try {
-            await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 10 });
-          } finally {
-            await page.mouse.up();
+      if (this.browserProcess.backend === 'obscura' && options.action === 'press') {
+        if (!obscuraLocator) throw new TendrilError('STALE_ELEMENT_REF', 'Obscura action target is unavailable; take a new snapshot');
+        await obscuraLocator.evaluate((element) => (element as HTMLElement).focus());
+        await page.keyboard.press(options.key ?? 'Enter');
+      } else if (this.browserProcess.backend === 'obscura' && !['drag', 'upload'].includes(options.action)) {
+        if (!obscuraLocator) throw new TendrilError('STALE_ELEMENT_REF', 'Obscura action target is unavailable; take a new snapshot');
+        await this.actInObscura(obscuraLocator, {
+          ...options,
+          action: options.action as Exclude<BrowserAction, 'drag' | 'upload' | 'press'>,
+        });
+      } else
+        switch (options.action) {
+          case 'click':
+            await target.element.click();
+            break;
+          case 'double_click':
+            await target.element.dblclick();
+            break;
+          case 'hover':
+            await target.element.hover();
+            break;
+          case 'focus':
+            await target.element.focus();
+            break;
+          case 'fill':
+            await target.element.fill(options.text ?? '');
+            break;
+          case 'type':
+            await target.element.fill('');
+            await target.element.type(options.text ?? '');
+            break;
+          case 'select':
+            if (options.value !== undefined) await target.element.selectOption({ label: options.value });
+            else await target.element.selectOption(options.values ?? []);
+            break;
+          case 'check':
+            await target.element.check();
+            break;
+          case 'uncheck':
+            await target.element.uncheck();
+            break;
+          case 'press':
+            await target.element.press(options.key ?? 'Enter');
+            break;
+          case 'scroll':
+            await target.element.evaluate((element, delta) => element.scrollBy(delta.x, delta.y), { x: options.deltaX ?? 0, y: options.deltaY ?? 600 });
+            break;
+          case 'drag': {
+            if (!options.targetRef) throw new TendrilError('STALE_ELEMENT_REF', 'targetRef is required for drag');
+            const destination = await this.resolveTarget(options.targetRef);
+            if (destination.page !== page) throw new TendrilError('STALE_ELEMENT_REF', 'Drag refs must belong to the same page');
+            destinationPageId = destination.target.pageId;
+            const [sourceBox, targetBox] = await Promise.all([target.element.boundingBox(), destination.target.element.boundingBox()]);
+            if (!sourceBox || !targetBox) throw new TendrilError('STALE_ELEMENT_REF', 'Drag source or destination is no longer visible; take a new snapshot');
+            await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+            await page.mouse.down();
+            try {
+              await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 10 });
+            } finally {
+              await page.mouse.up();
+            }
+            break;
           }
-          break;
+          case 'upload': {
+            const files = await Promise.all((options.files ?? []).map((file) => assertPathWithinRoots(file, this.config.workspaceRoots)));
+            await target.element.setInputFiles(files);
+            break;
+          }
         }
-        case 'upload': {
-          const files = await Promise.all((options.files ?? []).map((file) => assertPathWithinRoots(file, this.config.workspaceRoots)));
-          await target.element.setInputFiles(files);
-          break;
+      if (options.submit && ['fill', 'type'].includes(options.action)) {
+        if (this.browserProcess.backend === 'obscura') {
+          if (!obscuraLocator) throw new TendrilError('STALE_ELEMENT_REF', 'Obscura action target is unavailable; take a new snapshot');
+          await obscuraLocator.evaluate((element) => {
+            const form = (element as HTMLInputElement | HTMLTextAreaElement).form;
+            if (form?.requestSubmit) form.requestSubmit();
+            else form?.submit();
+          });
+        } else {
+          await target.element.press('Enter');
         }
       }
-      if (options.submit && ['fill', 'type'].includes(options.action)) await target.element.press('Enter');
     } finally {
       await this.invalidatePageRefs(target.pageId);
       if (destinationPageId && destinationPageId !== target.pageId) await this.invalidatePageRefs(destinationPageId);
@@ -1513,7 +1653,15 @@ export class TendrilSession {
           tag: element.tagName.toLowerCase(),
           type: element instanceof HTMLInputElement ? element.type.toLowerCase() : '',
         }));
-        if (control.tag === 'select') {
+        if (this.browserProcess.backend === 'obscura' && control.tag === 'select') {
+          await this.actInObscura(locator, { action: 'select', value });
+        } else if (this.browserProcess.backend === 'obscura' && (control.type === 'checkbox' || control.type === 'radio')) {
+          await this.actInObscura(locator, {
+            action: /^(true|1|yes|on|checked)$/i.test(value) ? 'check' : 'uncheck',
+          });
+        } else if (this.browserProcess.backend === 'obscura') {
+          await this.actInObscura(locator, { action: 'fill', text: value });
+        } else if (control.tag === 'select') {
           await locator.selectOption({ label: value }).catch(() => locator.selectOption(value));
         } else if (control.type === 'checkbox' || control.type === 'radio') {
           if (/^(true|1|yes|on|checked)$/i.test(value)) await locator.check();
@@ -1722,6 +1870,23 @@ export class TendrilSession {
   }): Promise<void> {
     const page = this.currentPage();
     const pageId = this.pageId(page);
+    if (this.browserProcess.backend === 'obscura') {
+      const unsupported = [
+        options.geolocation ? 'geolocation' : undefined,
+        options.offline !== undefined ? 'offline' : undefined,
+        options.httpCredentials !== undefined ? 'httpCredentials' : undefined,
+        options.permissions ? 'permissions' : undefined,
+        options.colorScheme ? 'colorScheme' : undefined,
+        options.reducedMotion ? 'reducedMotion' : undefined,
+        options.timezoneId ? 'timezoneId' : undefined,
+      ].filter((value): value is string => Boolean(value));
+      if (unsupported.length) {
+        throw new TendrilError(
+          'UNSUPPORTED_OPERATION',
+          `Obscura does not currently support: ${unsupported.join(', ')}. Use the Chromium backend for this configuration.`,
+        );
+      }
+    }
     try {
       if (options.viewport) await page.setViewportSize(options.viewport);
       if (options.headers) await this.chromium.context.setExtraHTTPHeaders(options.headers);
@@ -1730,7 +1895,14 @@ export class TendrilSession {
       if (options.httpCredentials !== undefined) await this.chromium.context.setHTTPCredentials(options.httpCredentials);
       if (options.permissions) await this.chromium.context.grantPermissions(options.permissions, options.origin ? { origin: options.origin } : undefined);
       if (options.colorScheme || options.reducedMotion) await page.emulateMedia({ colorScheme: options.colorScheme, reducedMotion: options.reducedMotion });
-      if (options.timezoneId || options.userAgent) {
+      if (this.browserProcess.backend === 'obscura' && options.userAgent) {
+        const cdp = await this.chromium.context.newCDPSession(page);
+        try {
+          await cdp.send('Network.setUserAgentOverride', { userAgent: options.userAgent });
+        } finally {
+          await cdp.detach();
+        }
+      } else if (options.timezoneId || options.userAgent) {
         const cdp = await this.chromium.context.newCDPSession(page);
         try {
           if (options.timezoneId) await cdp.send('Emulation.setTimezoneOverride', { timezoneId: options.timezoneId });
@@ -1857,6 +2029,12 @@ export class TendrilSession {
 
   backendCdpHttpUrl(): string {
     return `http://127.0.0.1:${this.chromium.cdpPort}`;
+  }
+
+  supportsSharedCdpGateway(): boolean {
+    // Obscura creates a fresh isolated context for every CDP WebSocket. A
+    // second gateway connection would not observe this Tendril session.
+    return this.browserProcess.backend === 'chromium';
   }
 
   async close(): Promise<void> {

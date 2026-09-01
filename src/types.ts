@@ -2,12 +2,16 @@ export type SessionId = string;
 export type PageId = string;
 export type SnapshotId = string;
 export type ElementRef = string;
+export type BrowserBackend = 'obscura' | 'chromium';
 
 export interface TendrilConfig {
   host: string;
   port: number;
+  browserBackend: BrowserBackend;
   headless: boolean;
   executablePath?: string;
+  obscuraExecutablePath?: string;
+  obscuraStealth: boolean;
   maxSessions: number;
   sessionIdleMs: number;
   actionTimeoutMs: number;
@@ -43,6 +47,7 @@ export interface SessionCreateOptions {
 
 export interface SessionInfo {
   id: SessionId;
+  backend: BrowserBackend;
   profile?: string;
   ephemeral: boolean;
   headless: boolean;

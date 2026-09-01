@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // The general integration suite exercises the Chromium fallback. Obscura
+    // has its own real-binary integration suite with an explicit override.
+    env: { TENDRIL_BROWSER_BACKEND: 'chromium' },
     include: ['tests/**/*.test.ts'],
     testTimeout: 45_000,
     hookTimeout: 45_000,

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Use the Rust-based Obscura 0.2.1 engine as the default browser backend, with Chromium retained for headed sessions and compatibility.
+- Add a checksum-pinned cross-platform Obscura installer, configuration, diagnostics, container packaging, real-browser integration coverage, and deterministic backend benchmarks.
+- Keep raw authenticated CDP available for Chromium sessions while withholding it for Obscura's per-connection isolated contexts.
+- Preserve named profiles, network policy, semantic snapshots, actions, captures, MCP, REST, research, crawling, and lifecycle cleanup across both backends.
+
 ## 1.1.0 - 2026-08-27
 
 - **Compact snapshot mode** — reduces token usage by up to 90% via depth limiting, text inlining, and empty container drops while preserving interactive elements.

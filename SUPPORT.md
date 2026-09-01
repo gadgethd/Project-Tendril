@@ -24,4 +24,4 @@ Do not use issues or discussions for vulnerabilities. Follow [SECURITY.md](SECUR
 
 ## Scope
 
-Project Tendril supports Node.js 22.19 and the Node.js 24 release line with a sandbox-capable Chromium installation. Linux, Windows, and macOS are exercised in CI; the hardened container is the recommended boundary for adversarial browsing.
+Project Tendril supports Node.js 22.19 and the Node.js 24 release line with Obscura 0.2.1 by default and a sandbox-capable Chromium installation as fallback. Linux, Windows, and macOS are exercised in CI; the hardened Obscura container is the recommended boundary for adversarial browsing.
