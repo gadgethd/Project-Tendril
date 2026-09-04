@@ -81,7 +81,7 @@ Project Tendril is inspired by the architectural ideas in Cloudflare's [Kitesurf
 
 ### Web discovery
 
-- Backend-driven search with Bing, DuckDuckGo, Google, and optional SearXNG adapters.
+- Browser-independent search with Bing, DuckDuckGo, Google, and optional SearXNG adapters.
 - Automatic provider fallback when a provider fails or challenges the browser.
 - Multi-query research with URL deduplication and source-attributed evidence chunks.
 - Bounded, cancellable, robots-aware crawling with same-origin and depth controls.
@@ -256,7 +256,7 @@ Never cache element refs across navigation. Refs are intentionally invalidated w
 
 ## MCP tools
 
-Project Tendril 1.0 exposes 18 tools:
+Project Tendril exposes 18 tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -267,7 +267,7 @@ Project Tendril 1.0 exposes 18 tools:
 | `browser_act` | Perform ref-based pointer, keyboard, form, drag, scroll, and upload actions |
 | `browser_wait` | Wait for text, a selector, URL, load state, or bounded delay |
 | `browser_extract` | Extract HTML, Markdown, text, links, metadata, forms, or tables |
-| `browser_search` | Search the web through the configured backend with provider fallback |
+| `browser_search` | Search without a browser session, with provider fallback and partial results |
 | `browser_research` | Run multiple searches and gather deduplicated, source-attributed evidence |
 | `browser_crawl` | Start, inspect, retrieve, or cancel a bounded crawl |
 | `browser_capture` | Capture PNG/JPEG screenshots or PDFs |
@@ -348,9 +348,15 @@ The authenticated service exposes a compact OpenAPI document at `http://127.0.0.
 
 Configure a self-hosted SearXNG instance by setting `searxngUrl`. Its JSON API is used directly, retaining native scores, engines, publication dates, and unresponsive-engine metadata. Unconfigured providers are skipped without opening a browser session.
 
-An opt-in live quality smoke is available with `TENDRIL_LIVE_SEARXNG_URL=https://your-instance.example TENDRIL_ALLOW_NO_SANDBOX=true npx vitest run tests/search-live.test.ts`; normal tests never contact a live provider.
+Search discovery does not require an installed browser or a free browser slot. Provider requests use the same network policy and DNS pinning as browser egress, with a total deadline covering DNS, redirects, retries, and response streaming. Transient GET failures receive one bounded retry; rate limits and `Retry-After` responses are respected. Gzip, deflate, and Brotli responses are decoded within compressed and decompressed byte limits.
+
+Completed search results and research evidence survive another provider or page reaching the deadline. Such responses set `partial: true` and explain the missing work in `failures` or `evidenceFailures`. Explicit cancellation still stops work. An entirely failed search remains an error, with `error.recovery` explaining the next step. See the [agent workflow and recovery guide](docs/agent-guide.md).
+
+Run `npm run test:search` for offline reliability checks. Live provider checks are opt-in: `TENDRIL_LIVE_SEARCH=true npm run test:search:live`, or `TENDRIL_LIVE_SEARXNG_URL=https://your-instance.example npm run test:search:live` for your SearXNG endpoint. Normal tests never contact a live provider.
 
 `browser_research` accepts up to ten queries, balances sources across queries and domains, visits sources concurrently within session and output budgets, and returns stable citation IDs with originating query, canonical and final URLs, status, MIME type, retrieval time, and content hash. It does not generate a summary; the calling agent remains responsible for analysis and citation.
+
+Research waits for temporary browser capacity within its deadline. Retrieve a retained job with `action: "get"` and `jobId`; this does not repeat searches or visits. Refinement prioritizes newly discovered sources when the source budget is full and gives their evidence first use of the output budget.
 
 `browser_crawl` creates an asynchronous job with:
 
@@ -413,7 +419,7 @@ Configuration precedence is:
 | `allowedHosts` | `TENDRIL_ALLOWED_HOSTS` | `[]` | Comma-separated host allowlist |
 | `blockedHosts` | `TENDRIL_BLOCKED_HOSTS` | `[]` | Comma-separated host blocklist |
 | `workspaceRoots` | `TENDRIL_WORKSPACE_ROOTS` | current directory | Permitted upload roots |
-| `searchProviders` | `TENDRIL_SEARCH_PROVIDERS` | `bing,duckduckgo,google` | Ordered search adapters |
+| `searchProviders` | `TENDRIL_SEARCH_PROVIDERS` | `searxng,duckduckgo,bing,google` | Ordered search adapters; unconfigured adapters are skipped |
 | `searxngUrl` | `TENDRIL_SEARXNG_URL` | unset | Optional self-hosted SearXNG URL |
 | `dataDir` | `TENDRIL_DATA_DIR` | platform data directory | Named profiles and HTTP token |
 | `runtimeDir` | `TENDRIL_RUNTIME_DIR` | platform runtime directory | Ephemeral session state |

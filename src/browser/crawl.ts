@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 import robotsParser from 'robots-parser';
 import { TendrilError } from '../errors.js';
+import { USER_AGENT } from '../version.js';
 import type { CrawlJob, CrawlResult, CrawlResultPage } from '../types.js';
 import { type Logger, newId, withTimeout } from '../util.js';
 import type { BrowserManager } from './manager.js';
@@ -430,7 +431,7 @@ export class CrawlService {
         const nextUrl = new URL(next.url);
         const robots = options.respectRobots ? await this.robotsFor(job, session, nextUrl, robotsByOrigin) : undefined;
         if (job.cancelled) break;
-        if (robots && !robots.isAllowed(next.url, 'Project-Tendril/1.0')) {
+        if (robots && !robots.isAllowed(next.url, USER_AGENT)) {
           const publicUrl = publicCrawlUrl(next.url);
           job.results.push({ requestedUrl: publicUrl, finalUrl: publicUrl, url: publicUrl, status: null, links: [], error: 'Blocked by robots.txt' });
           job.visited = seen.size;
@@ -461,7 +462,7 @@ export class CrawlService {
             continue;
           }
           const finalRobots = options.respectRobots ? await this.robotsFor(job, session, parsedFinal, robotsByOrigin) : undefined;
-          if (finalRobots && !finalRobots.isAllowed(finalUrl, 'Project-Tendril/1.0')) {
+          if (finalRobots && !finalRobots.isAllowed(finalUrl, USER_AGENT)) {
             result.error = 'Blocked by robots.txt after redirect';
             job.results.push(result);
             job.visited = seen.size;

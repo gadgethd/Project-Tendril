@@ -12,7 +12,7 @@ export async function launchBrowser(options: {
   locale?: string;
   logger: Logger;
 }): Promise<BrowserProcess> {
-  if (options.config.browserBackend === 'obscura') {
+  if (options.config.browserBackend === 'obscura' && options.headless) {
     return launchObscura({
       executablePath: options.config.obscuraExecutablePath,
       userDataDir: options.userDataDir,

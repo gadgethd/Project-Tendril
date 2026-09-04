@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.3.0 - 2026-09-04
+
+- Remove the browser installation and session-capacity dependency from search provider requests; retain network policy and DNS pinning.
+- Fix Bing RSS URL parsing and DuckDuckGo relative redirect links; bound Google pagination to the requested count and preserve earlier pages on failure.
+- Preserve completed search results and research evidence at deadlines, isolate cancellation between shared callers, and wait for temporary evidence-browser capacity.
+- Add a shared text transport with absolute deadlines, bounded transient GET retries, compressed response support, redirect validation, and truncated-stream handling.
+- Keep element refs valid after text fetches and navigation in unrelated tabs; select Chromium for explicitly headed sessions.
+- Add actionable MCP/REST error recovery, input validation, accurate HTTP status codes, retained research job retrieval, and refinement source prioritization.
+- Add transport, provider, cancellation, browser-ref, and full MCP/REST regression coverage plus opt-in live search checks.
+- Refresh transitive `fast-uri` and `qs` packages to resolve the current dependency audit findings.
 - Use the Rust-based Obscura 0.2.1 engine as the default browser backend, with Chromium retained for headed sessions and compatibility.
 - Add a checksum-pinned cross-platform Obscura installer, configuration, diagnostics, container packaging, real-browser integration coverage, and deterministic backend benchmarks.
 - Keep raw authenticated CDP available for Chromium sessions while withholding it for Obscura's per-connection isolated contexts.

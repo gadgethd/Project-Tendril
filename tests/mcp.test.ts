@@ -70,8 +70,11 @@ describe('MCP server', () => {
     const started = await callResearch({ action: 'start', queries: ['initial'] });
     const jobId = (started.structuredContent as { id: string }).id;
     const refined = await callResearch({ action: 'refine', jobId, followUpQueries: ['followup'] });
+    const retrieved = await callResearch({ action: 'get', jobId });
 
     expect(refined.isError).not.toBe(true);
     expect((refined.structuredContent as { queries: string[] }).queries).toEqual(['initial', 'followup']);
+    expect(retrieved.structuredContent).toEqual(refined.structuredContent);
+    expect(search.research).toHaveBeenCalledTimes(2);
   });
 });

@@ -6,6 +6,9 @@ import {
   isOfficialMcpUrl,
   type ParsedSearchResult,
   parseSearxngResponse,
+  parseBingRss,
+  parseDuckDuckGoHtml,
+  normalizeResultUrl,
   rankResults,
   SearchCache,
   type SearchResponse,
@@ -137,7 +140,9 @@ describe('SearXNG JSON adapter', () => {
       create: vi.fn(async () => ({ id: 'ses_1', fetchText })),
       close: vi.fn(async () => undefined),
     } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, {
+      fetchText: async (url, options) => ({ url, ...(await fetchText(url, undefined, options)) }),
+    });
 
     const response = await service.search({
       query: 'Model Context Protocol official specification',
@@ -163,7 +168,7 @@ describe('SearXNG JSON adapter', () => {
       providerScore: 9,
       url: 'https://modelcontextprotocol.io/specification',
     });
-    expect(manager.close).toHaveBeenCalledWith('ses_1');
+    expect(manager.create).not.toHaveBeenCalled();
   });
 
   it('rejects per-call endpoint overrides', async () => {
@@ -291,6 +296,148 @@ describe('deterministic ranking and provider selection', () => {
 });
 
 describe('provider resilience', () => {
+  it.each([{ query: 12 }, { query: 'x', timeoutMs: NaN }, { query: 'x', provider: 'unknown' }, { query: 'x', maxResults: -1 }])(
+    'rejects malformed inputs before any provider work: %j',
+    async (options) => {
+      const { service, searchWithProvider } = serviceWithProviderSearch(['bing'], async () => []);
+      await expect(service.search(options as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+      expect(searchWithProvider).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not trip a provider circuit for query-specific empty results', async () => {
+    const { service, searchWithProvider } = serviceWithProviderSearch(['bing'], async (_provider, query) =>
+      query.startsWith('empty') ? [] : [{ title: query, url: 'https://example.com/recovered', snippet: query }],
+    );
+    for (let index = 0; index < 4; index += 1) await expect(service.search({ query: `empty ${index}` })).rejects.toMatchObject({ code: 'SEARCH_FAILED' });
+    await expect(service.search({ query: 'valid result' })).resolves.toMatchObject({ results: [{ url: 'https://example.com/recovered' }] });
+    expect(searchWithProvider).toHaveBeenCalledTimes(5);
+    expect(service.getProviderHealth('bing')).toMatchObject({ consecutiveFailures: 0 });
+  });
+
+  it('requests only the requested Google result count and forwards supported search controls', async () => {
+    const manager = { config: { searchProviders: ['google'], googleSearchApiKey: 'key', googleSearchCx: 'cx', maxSessions: 1 } } as unknown as BrowserManager;
+    const fetchText = vi.fn(async (url: string) => ({
+      url,
+      status: 200,
+      headers: {},
+      text: JSON.stringify({ items: [{ title: 'Google result', link: 'https://example.com/google', snippet: 'Google result' }] }),
+    }));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, { fetchText });
+    await service.search({ query: 'Google result', maxResults: 3, language: 'en-GB', safeSearch: 2, timeRange: 'month' });
+    expect(fetchText).toHaveBeenCalledOnce();
+    expect(Object.fromEntries(new URL(fetchText.mock.calls[0]![0]).searchParams)).toMatchObject({
+      num: '3',
+      lr: 'lang_en',
+      safe: 'active',
+      dateRestrict: 'm1',
+    });
+  });
+
+  it('keeps Google results from earlier pages if a later page fails', async () => {
+    const manager = { config: { searchProviders: ['google'], googleSearchApiKey: 'key', googleSearchCx: 'cx', maxSessions: 1 } } as unknown as BrowserManager;
+    const fetchText = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
+          items: Array.from({ length: 10 }, (_, index) => ({ title: 'Google result', link: `https://example.com/${index}`, snippet: 'Google result' })),
+        }),
+      })
+      .mockResolvedValueOnce({ status: 503, headers: {}, text: '' });
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, { fetchText });
+    const response = await service.search({ query: 'Google result', maxResults: 20 });
+    expect(response.results).toHaveLength(10);
+    expect(response.partial).toBe(true);
+    expect(response.failures).toContainEqual(expect.objectContaining({ provider: 'google', kind: 'transport' }));
+  });
+
+  it('parses Bing RSS as XML so link contents and CDATA survive', () => {
+    expect(
+      parseBingRss(
+        '<rss><channel><item><title><![CDATA[Research & evidence]]></title><link>https://example.com/?a=1&amp;b=2</link><description>Useful results</description></item></channel></rss>',
+      ),
+    ).toEqual([{ title: 'Research & evidence', url: 'https://example.com/?a=1&b=2', snippet: 'Useful results' }]);
+  });
+
+  it('unwraps relative and protocol-relative DuckDuckGo redirect links', () => {
+    const parsed = parseDuckDuckGoHtml(
+      '<div class="result"><h2 class="result__title">Research</h2><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle%3Futm_source%3Dddg">Read</a></div>',
+    );
+    expect(normalizeResultUrl(parsed[0]!.url)).toBe('https://example.com/article');
+    const relative = parseDuckDuckGoHtml(
+      '<div class="result"><h2 class="result__title">Research</h2><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Farticle">Read</a></div>',
+    );
+    expect(normalizeResultUrl(relative[0]!.url)).toBe('https://example.com/article');
+  });
+
+  it('retains a completed provider when another provider reaches the search deadline', async () => {
+    const { service } = serviceWithProviderSearch(['bing', 'duckduckgo'], async (provider, query, signal) => {
+      if (provider === 'bing') return [{ title: query, url: 'https://example.com/fast', snippet: query }];
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    const response = await service.search({ query: 'partial research', timeoutMs: 80 });
+    expect(response).toMatchObject({ partial: true, results: [{ url: 'https://example.com/fast' }] });
+    expect(response.failures).toContainEqual(expect.objectContaining({ provider: 'duckduckgo', kind: 'timeout' }));
+    await service.close();
+  });
+
+  it('does not let one cancelled caller cancel a shared search for another caller', async () => {
+    let finish!: (results: ParsedSearchResult[]) => void;
+    const { service, searchWithProvider } = serviceWithProviderSearch(
+      ['bing'],
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const first = service.search({ query: 'shared evidence', signal: controller.signal });
+    const second = service.search({ query: 'shared evidence' });
+    await vi.waitFor(() => expect(searchWithProvider).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ code: 'CANCELLED' });
+    finish([{ title: 'shared evidence', url: 'https://example.com/shared', snippet: 'shared evidence' }]);
+    await expect(second).resolves.toMatchObject({ results: [{ url: 'https://example.com/shared' }] });
+    await service.close();
+  });
+
+  it('returns collected evidence and sources when another evidence page times out', async () => {
+    let index = 0;
+    const manager = {
+      config: { searchProviders: ['bing'], maxSessions: 2 },
+      create: vi.fn(async () => {
+        const id = `evidence_${index++}`;
+        let rejectNavigation: (error: Error) => void = () => {};
+        return {
+          id,
+          navigate: async ({ url }: { url: string }) => {
+            if (url.endsWith('/slow'))
+              return new Promise((_resolve, reject) => {
+                rejectNavigation = reject;
+              });
+            return { url, title: 'Fast evidence', status: 200, mimeType: 'text/html' };
+          },
+          extract: async () => 'Evidence content from a completed source. '.repeat(10),
+          close: async () => rejectNavigation(new Error('Page closed')),
+        };
+      }),
+      close: vi.fn(async () => undefined),
+    } as unknown as BrowserManager;
+    const service = new SearchService(manager, new Logger('error'));
+    Object.defineProperty(service, 'search', {
+      value: async () => ({ results: [result('Fast', 'bing', 'https://example.com/fast'), result('Slow', 'bing', 'https://example.com/slow')] }),
+    });
+    const response = await service.research({ queries: ['evidence'], timeoutMs: 100 });
+    expect(response.sources).toHaveLength(2);
+    expect(response.evidence[0]!.sourceUrl).toBe('https://example.com/fast');
+    expect(response.partial).toBe(true);
+    expect(response.failures).toContainEqual(expect.objectContaining({ stage: 'evidence', sourceUrl: 'https://example.com/slow' }));
+    expect(manager.close).toHaveBeenCalledTimes(2);
+    await service.close();
+  });
+
   it('falls back to DuckDuckGo HTML when Instant Answer topics are irrelevant', async () => {
     const fetchText = vi
       .fn()
@@ -316,7 +463,9 @@ describe('provider resilience', () => {
       create: vi.fn(async () => ({ id: 'ses_ddg', fetchText })),
       close: vi.fn(async () => undefined),
     } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, {
+      fetchText: async (url, options) => ({ url, ...(await fetchText(url, undefined, options)) }),
+    });
 
     const response = await service.search({ query: 'Model Context Protocol specification', provider: 'duckduckgo' });
 
@@ -398,13 +547,15 @@ describe('provider resilience', () => {
   });
 
   it('parses Retry-After and opens a rate-limit circuit immediately', async () => {
-    const fetchText = vi.fn(async () => ({ status: 429, headers: { 'retry-after': '2' }, text: '' }));
+    const fetchText = vi.fn(async (_url: string, _pageId?: string, _options?: unknown) => ({ status: 429, headers: { 'retry-after': '2' }, text: '' }));
     const manager = {
       config: { searchProviders: ['searxng'], searxngUrl: 'https://search.example', maxSessions: 1 },
       create: vi.fn(async () => ({ id: 'ses_rate', fetchText })),
       close: vi.fn(async () => undefined),
     } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, {
+      fetchText: async (url, options) => ({ url, ...(await fetchText(url, undefined, options)) }),
+    });
 
     const first = await service.search({ query: 'rate limited query' });
     const second = service.search({ query: 'another rate limited query' });
@@ -431,12 +582,12 @@ describe('provider resilience', () => {
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED', message: 'stop now' });
   });
 
-  it('awaits direct-adapter cleanup before returning cancellation', async () => {
+  it('cancels a direct adapter without allocating a browser', async () => {
     const close = vi.fn(async () => undefined);
     const fetchText = vi.fn(
-      async (_url: string, _pageId: undefined, options: { signal: AbortSignal }) =>
+      async (_url: string, _pageId: undefined, options: { signal?: AbortSignal }) =>
         new Promise<never>((_resolve, reject) => {
-          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+          options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
         }),
     );
     const manager = {
@@ -444,18 +595,56 @@ describe('provider resilience', () => {
       create: vi.fn(async () => ({ id: 'ses_cancel', fetchText })),
       close,
     } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, {
+      fetchText: (url, options) => fetchText(url, undefined, options),
+    });
     const controller = new AbortController();
     const pending = service.search({ query: 'cancel direct adapter', signal: controller.signal });
     await vi.waitFor(() => expect(fetchText).toHaveBeenCalled());
     controller.abort(new TendrilError('CANCELLED', 'client cancelled'));
 
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
-    expect(close).toHaveBeenCalledWith('ses_cancel');
+    expect(close).not.toHaveBeenCalled();
   });
 });
 
 describe('research allocation and provenance', () => {
+  it('waits for transient browser capacity instead of dropping a source', async () => {
+    const manager = {
+      config: { searchProviders: ['bing'], maxSessions: 1 },
+      create: vi
+        .fn()
+        .mockRejectedValueOnce(new TendrilError('SESSION_LIMIT_REACHED', 'busy'))
+        .mockResolvedValue({
+          id: 'evidence',
+          navigate: async ({ url }: { url: string }) => ({ url, title: 'Evidence', status: 200 }),
+          extract: async () => 'Completed evidence text. '.repeat(10),
+        }),
+      close: vi.fn(async () => undefined),
+    } as unknown as BrowserManager;
+    const service = new SearchService(manager, new Logger('error'));
+    Object.defineProperty(service, 'search', { value: async () => ({ results: [result('Evidence', 'bing', 'https://example.com/source')] }) });
+    const response = await service.research({ queries: ['evidence'], timeoutMs: 2_000 });
+    expect(response.evidence).toHaveLength(1);
+    expect(response.failures).toEqual([]);
+    expect(manager.create).toHaveBeenCalledTimes(2);
+    expect(manager.close).toHaveBeenCalledOnce();
+  });
+
+  it('retains newly researched sources when a refinement fills the source budget', async () => {
+    const { service } = serviceWithProviderSearch(['bing'], async () => []);
+    Object.defineProperty(service, 'research', {
+      value: async ({ queries }: { queries: string[] }) => {
+        const source = result(queries[0]!, 'bing', `https://example.com/${queries[0]}`);
+        return { queries, sources: [source], evidence: [evidence(source, queries[0]!)], failures: [] };
+      },
+    });
+    const job = await service.startResearchJob({ queries: ['initial'], maxSources: 1 });
+    const refined = await service.refineResearchJob(job.id, { queries: ['followup'], maxSources: 1 });
+    expect(refined.sources).toMatchObject([{ url: 'https://example.com/followup' }]);
+    expect(refined.evidence).toMatchObject([{ sourceUrl: 'https://example.com/followup' }]);
+  });
+
   it('balances queries and domains while merging originating queries', () => {
     const allocated = allocateResearchSources(
       [
@@ -643,14 +832,16 @@ describe('research allocation and provenance', () => {
       create: vi.fn(async () => ({ id: 'ses_shutdown', fetchText })),
       close,
     } as unknown as BrowserManager;
-    const service = new SearchService(manager, new Logger('error'));
+    const service = new SearchService(manager, new Logger('error'), new SearchCache(), Date.now, {
+      fetchText: (url, options) => fetchText(url, undefined, { signal: options.signal! }),
+    });
     const pending = service.search({ query: 'shutdown active search' });
     await vi.waitFor(() => expect(fetchText).toHaveBeenCalled());
 
     await service.close();
 
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
-    expect(close).toHaveBeenCalledWith('ses_shutdown');
+    expect(close).not.toHaveBeenCalled();
     await expect(service.search({ query: 'after shutdown' })).rejects.toMatchObject({ code: 'CANCELLED' });
   });
 });

@@ -196,6 +196,20 @@ jobs:
         if: always()
         run: docker stop project-tendril-ci || true
 
+  required-browser-check:
+    # Preserve the existing protected-branch context after the Docker backend
+    # changed to Obscura. Both the Docker smoke and Chromium matrix must pass.
+    name: Docker build and Chromium smoke test
+    needs: [docker, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify both browser gates passed
+        env:
+          DOCKER_RESULT: ${{ needs.docker.result }}
+          CHROMIUM_RESULT: ${{ needs.test.result }}
+        run: test "$DOCKER_RESULT" = success && test "$CHROMIUM_RESULT" = success
+
   obscura:
     name: Obscura backend integration
     runs-on: ubuntu-latest
