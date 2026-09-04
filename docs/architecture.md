@@ -2,7 +2,7 @@
 
 ## Request flow
 
-Tendril has one stateful component: `BrowserManager`. It owns session metadata and one `TendrilSession` per browser process. MCP, REST, the dashboard, and Chromium CDP forwarding all refer to the same session identifiers.
+`BrowserManager` owns session metadata and one `TendrilSession` per browser process. The shared search service owns provider health, bounded caches, in-flight requests, and retained research jobs; the crawl service owns crawl jobs. MCP, REST, the dashboard, and Chromium CDP forwarding refer to the same runtime state.
 
 For each session Tendril:
 
@@ -21,6 +21,10 @@ Snapshots walk visible DOM semantics in every reachable frame, derive accessible
 
 Reader extraction runs Mozilla Readability against serialized HTML and converts the result to Markdown. Search and research return structured source URLs, titles, snippets, and evidence chunks; Tendril does not summarize with a model.
 
+Search provider requests run without a browser through the shared policy-aware text transport. Each redirect is validated and its destination address is pinned. Four provider requests can run concurrently, independently of browser capacity, with a per-provider limit of two and singleflight deduplication for identical queries and controls. Google pagination stops at the requested result limit and keeps previous pages if a later page fails. Query-specific empty or irrelevant results do not trip the provider outage circuit.
+
+The same bounded transport powers session `fetchText` through its egress proxy. Fetching text does not invalidate page refs; navigation invalidates only the affected page. Total deadlines cover DNS, redirect chains, retry delays, and response body streaming. Both wire bytes and decompressed bytes are bounded.
+
 ## Interfaces
 
 - Stdio MCP starts an embedded runtime and writes protocol data only to stdout. Logs use stderr.
@@ -32,6 +36,8 @@ Reader extraction runs Mozilla Readability against serialized HTML and converts 
 ## Failure model
 
 Session-independent work such as extraction, search parsing, and crawl queue handling is disposable. A failed page or provider produces a typed error or partial crawl result. Browser crashes affect only one session. Shutdown kills the complete browser process group, closes proxy connections, and removes ephemeral state.
+
+Search and research retain completed results on deadline expiry and mark partial responses. Explicit cancellation propagates to shared upstream work only after the last caller leaves; cancelling one caller cannot cancel another caller's search. Evidence waits for browser capacity within the operation deadline. Tool errors distinguish invalid arguments, transport failures, timeouts, disconnected browsers, and internal errors, with concrete recovery guidance. REST maps transport failures to 502, timeouts to 504, unavailable browsers to 503, and internal failures to 500.
 
 The TypeScript layer remains a thin MCP, REST, policy, and lifecycle control plane. The default rendering and JavaScript hot path runs in Obscura's Rust engine; local benchmarks did not show a reason to rewrite the orchestration layer in Rust. See [Obscura backend](obscura-backend.md) for compatibility and benchmark details.
 

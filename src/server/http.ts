@@ -7,10 +7,11 @@ import ipaddr from 'ipaddr.js';
 import type { CrawlService } from '../browser/crawl.js';
 import type { BrowserManager, SessionLease } from '../browser/manager.js';
 import type { SearchService } from '../browser/search.js';
-import { asTendrilError, TendrilError } from '../errors.js';
+import { asTendrilError, errorPayload, TendrilError } from '../errors.js';
 import { constantTimeTokenEqual, createCdpCapability, loadOrCreateHttpToken, parseBearerAuthorization, verifyCdpCapability } from '../security/auth.js';
 import { BoundedRateLimiter, type RateLimitDecision } from '../security/rate-limit.js';
 import type { Logger } from '../util.js';
+import { VERSION } from '../version.js';
 import { DASHBOARD_HTML } from './dashboard.js';
 import { createMcpServer } from './mcp.js';
 
@@ -33,8 +34,17 @@ function errorHandler(logger: Logger) {
           ? 403
           : tendril.code === 'SESSION_LIMIT_REACHED'
             ? 429
-            : 400;
-    response.status(status).json({ error: { code: tendril.code, message: tendril.message, retryable: tendril.retryable, details: tendril.details } });
+            : tendril.code === 'TIMEOUT'
+              ? 504
+              : tendril.code === 'NETWORK_ERROR' || tendril.code === 'SEARCH_FAILED'
+                ? 502
+                : tendril.code === 'BROWSER_DISCONNECTED' || tendril.code === 'BROWSER_LAUNCH_FAILED'
+                  ? 503
+                  : tendril.code === 'INTERNAL_ERROR'
+                    ? 500
+                    : 400;
+    if (response.headersSent || response.destroyed) return;
+    response.status(status).json(errorPayload(tendril));
   };
 }
 
@@ -164,7 +174,7 @@ export async function startHttpServer(services: {
   app.get('/', (_request, response) => response.redirect('/dashboard'));
   app.get('/dashboard', (_request, response) => response.type('html').send(DASHBOARD_HTML));
   app.get('/health', (_request, response) =>
-    response.json({ status: 'ok', version: '1.1.0', backend: manager.config.browserBackend, browserSessions: manager.activeCount() }),
+    response.json({ status: 'ok', version: VERSION, backend: manager.config.browserBackend, browserSessions: manager.activeCount() }),
   );
   // Every authorization failure below consumes a bounded per-peer bucket, and CDP consumes a separate attempt bucket.
   // lgtm[js/missing-rate-limiting]
@@ -313,10 +323,11 @@ export async function startHttpServer(services: {
   app.get('/v1/sessions/:id/screenshot', async (request, response, next) => {
     try {
       const requestedFormat = request.query.format;
-      if (requestedFormat !== undefined && requestedFormat !== 'png' && requestedFormat !== 'jpeg') throw new Error('format must be png or jpeg');
+      if (requestedFormat !== undefined && requestedFormat !== 'png' && requestedFormat !== 'jpeg')
+        throw new TendrilError('INVALID_ARGUMENT', 'format must be png or jpeg');
       const format: 'png' | 'jpeg' = requestedFormat === 'jpeg' ? 'jpeg' : 'png';
       const quality = Number(request.query.quality ?? 80);
-      if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new Error('quality must be an integer from 1 to 100');
+      if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TendrilError('INVALID_ARGUMENT', 'quality must be an integer from 1 to 100');
       response.json(await manager.get(request.params.id!).capture({ format, quality }));
     } catch (error) {
       next(error);
@@ -568,7 +579,7 @@ function publicCdpUrl(manager: BrowserManager, sessionId: string, browserPath: s
 function openApiDocument(port: number): Record<string, unknown> {
   return {
     openapi: '3.1.0',
-    info: { title: 'Project Tendril API', version: '1.1.0' },
+    info: { title: 'Project Tendril API', version: VERSION },
     servers: [{ url: `http://127.0.0.1:${port}` }],
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
     security: [{ bearerAuth: [] }],

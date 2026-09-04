@@ -161,12 +161,12 @@ describe('HTTP and CDP interfaces', () => {
 
     mode = 'cleanup-failure';
     const cleanupFailure = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ html: '<p>ok</p>' }) });
-    expect(cleanupFailure.status).toBe(400);
+    expect(cleanupFailure.status).toBe(500);
     expect(await cleanupFailure.text()).toContain('injected lease cleanup failure');
 
     mode = 'dual-failure';
     const dualFailure = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ html: '<p>fail</p>' }) });
-    expect(dualFailure.status).toBe(400);
+    expect(dualFailure.status).toBe(500);
     const dualBody = await dualFailure.text();
     expect(dualBody).toContain('injected quick operation failure');
     expect(dualBody).toContain('injected lease cleanup failure');

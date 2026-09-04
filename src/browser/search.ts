@@ -1,5 +1,9 @@
-import { parseHTML } from 'linkedom';
+import { DOMParser, parseHTML } from 'linkedom';
+import { setTimeout as delay } from 'node:timers/promises';
+import { z } from 'zod/v4';
 import { TendrilError } from '../errors.js';
+import { fetchTextWithPolicy, type TextFetcher } from '../security/fetch-text.js';
+import { NetworkPolicy } from '../security/network-policy.js';
 import type { EvidenceChunk, SearchProviderHealth, SearchProviderName, SearchRateLimit, SearchResult } from '../types.js';
 import { hashText, type Logger, newId } from '../util.js';
 import type { BrowserManager } from './manager.js';
@@ -141,6 +145,7 @@ export interface SearchResponse {
   failures?: SearchProviderFailure[];
   evidenceFailures?: ResearchFailure[];
   rateLimit?: SearchRateLimit;
+  partial?: boolean;
 }
 
 export interface ResearchResponse {
@@ -148,6 +153,7 @@ export interface ResearchResponse {
   sources: SearchResult[];
   evidence: EvidenceChunk[];
   failures: ResearchFailure[];
+  partial?: boolean;
 }
 
 export interface ResearchJob extends ResearchResponse {
@@ -190,6 +196,39 @@ interface SearchSemantics {
   language?: string;
   safeSearch?: number;
   timeRange?: string;
+  maxResults?: number;
+}
+
+const searchControls = {
+  language: z.string().trim().min(1).max(64).optional(),
+  safeSearch: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  timeRange: z.enum(['day', 'month', 'year']).optional(),
+  timeoutMs: z.number().int().min(1).max(MAX_SEARCH_TIMEOUT_MS).optional(),
+  deadlineMs: z.number().finite().optional(),
+};
+const queryInput = z.string().trim().min(1).max(MAX_QUERY_CHARS);
+const searchInput = z.object({
+  ...searchControls,
+  query: queryInput,
+  provider: z.enum(['bing', 'duckduckgo', 'searxng', 'google']).optional(),
+  maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).optional(),
+  fetchTop: z.number().int().min(0).max(10).optional(),
+  searxngUrl: z.string().optional(),
+});
+const researchInput = z.object({
+  ...searchControls,
+  queries: z.array(queryInput).min(1).max(10),
+  maxResultsPerQuery: z.number().int().min(1).max(10).optional(),
+  maxSources: z.number().int().min(1).max(30).optional(),
+  maxEvidenceChars: z.number().int().min(1).max(MAX_EVIDENCE_TOTAL_CHARS).optional(),
+});
+
+function validateInput(schema: z.ZodType, input: unknown): void {
+  const validated = schema.safeParse(input);
+  if (!validated.success)
+    throw new TendrilError('INVALID_ARGUMENT', 'Invalid search or research arguments', {
+      details: { issues: validated.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) },
+    });
 }
 
 interface SearchCacheEntry {
@@ -394,6 +433,11 @@ function abortError(signal: AbortSignal): Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError(signal);
+}
+
+// Deadlines may return useful partial work. Explicit cancellation must still stop.
+function throwIfCancelled(signal: AbortSignal): void {
+  if (signal.aborted && !(signal.reason instanceof TendrilError && signal.reason.code === 'TIMEOUT')) throw abortError(signal);
 }
 
 function operationScope(options: { signal?: AbortSignal; deadlineMs?: number; timeoutMs?: number }, defaultTimeoutMs: number): OperationScope {
@@ -687,8 +731,8 @@ export function parseSearxngResponse(text: string): { results: ParsedSearchResul
   return { results, failures };
 }
 
-function parseBingRss(text: string): ParsedSearchResult[] {
-  const { document } = parseHTML(text);
+export function parseBingRss(text: string): ParsedSearchResult[] {
+  const document = new DOMParser().parseFromString(text, 'text/xml');
   return [...document.querySelectorAll('item')].slice(0, MAX_SEARCH_RESULTS).map((node) => ({
     title: node.querySelector('title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
     url: node.querySelector('link')?.textContent?.trim() ?? '',
@@ -696,16 +740,24 @@ function parseBingRss(text: string): ParsedSearchResult[] {
   }));
 }
 
-function parseDuckDuckGoHtml(text: string): ParsedSearchResult[] {
+export function parseDuckDuckGoHtml(text: string): ParsedSearchResult[] {
   if (/bots use duckduckgo|select all squares|anomaly-modal/i.test(text)) {
     throw new ProviderFailureError({ provider: 'duckduckgo', kind: 'challenge', message: 'DuckDuckGo returned a bot challenge', retryable: true });
   }
   const { document } = parseHTML(text);
   return [...document.querySelectorAll('.result')].slice(0, MAX_SEARCH_RESULTS).map((node) => ({
     title: node.querySelector('.result__title')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-    url: (node.querySelector('a.result__a') as HTMLAnchorElement | null)?.href ?? '',
+    url: resolveSearchLink(node.querySelector('a.result__a')?.getAttribute('href') ?? '', 'https://html.duckduckgo.com'),
     snippet: node.querySelector('.result__snippet')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
   }));
+}
+
+function resolveSearchLink(href: string, base: string): string {
+  try {
+    return href ? new URL(href, base).href : '';
+  } catch {
+    return '';
+  }
 }
 
 function retryAfterMs(headers: Record<string, string>, now = Date.now()): number | undefined {
@@ -831,6 +883,11 @@ export function allocateResearchSources(perQuery: Array<{ query: string; results
     }
     if (!progressed) break;
   }
+  for (const source of selected) {
+    source.queries = perQuery
+      .filter((group) => group.results.some((candidate) => (normalizeResultUrl(candidate.url) ?? candidate.url) === source.url))
+      .map((group) => group.query);
+  }
   return selected;
 }
 
@@ -867,6 +924,8 @@ export class SearchService {
   private readonly researchJobs = new Map<string, ResearchJob>();
   private readonly providerLimiter: Semaphore;
   private readonly evidenceLimiter: Semaphore;
+  private readonly networkPolicy: NetworkPolicy;
+  private readonly fetchText: TextFetcher;
   private closePromise?: Promise<void>;
   private closing = false;
 
@@ -875,10 +934,23 @@ export class SearchService {
     private readonly logger: Logger,
     private readonly cache = new SearchCache(),
     private readonly now: () => number = Date.now,
+    dependencies: { fetchText?: TextFetcher } = {},
   ) {
     const sessionCapacity = Math.max(1, Math.min(4, manager.config.maxSessions ?? 4));
-    this.providerLimiter = new Semaphore(sessionCapacity);
+    this.providerLimiter = new Semaphore(4);
     this.evidenceLimiter = new Semaphore(Math.max(1, Math.min(3, sessionCapacity)));
+    this.networkPolicy = new NetworkPolicy({
+      blockPrivateNetworks: manager.config.blockPrivateNetworks ?? true,
+      allowedHosts: manager.config.allowedHosts ?? [],
+      blockedHosts: manager.config.blockedHosts ?? [],
+    });
+    this.fetchText =
+      dependencies.fetchText ??
+      ((url, options) =>
+        fetchTextWithPolicy(this.networkPolicy, url, {
+          ...options,
+          maxBytes: Math.min(options.maxBytes ?? MAX_PROVIDER_BODY_BYTES, manager.config.maxResponseBodyBytes ?? MAX_PROVIDER_BODY_BYTES),
+        }));
   }
 
   getProviderHealth(): SearchProviderHealth[];
@@ -896,6 +968,8 @@ export class SearchService {
       const reason = new TendrilError('CANCELLED', 'Search service is shutting down', { retryable: true });
       for (const operation of operations) operation.scope.cancel(reason);
       await Promise.allSettled(operations.map((operation) => operation.done));
+      await Promise.allSettled([...this.singleflight.values()].map((flight) => flight.promise));
+      await this.networkPolicy.close();
     })();
     return this.closePromise;
   }
@@ -932,11 +1006,15 @@ export class SearchService {
         existing.providers = [...new Set([...(existing.providers ?? [existing.provider]), ...(candidate.providers ?? [candidate.provider])])];
       } else sourcesByUrl.set(canonical, { ...cloneResult(candidate), url: canonical });
     }
-    const sources = [...sourcesByUrl.values()].slice(0, maxSources);
+    const orderedSources =
+      sourcesByUrl.size > maxSources
+        ? [...followUp.sources, ...previous.sources].map((source) => sourcesByUrl.get(normalizeResultUrl(source.url) ?? source.url)!)
+        : [...sourcesByUrl.values()];
+    const sources = [...new Map(orderedSources.map((source) => [source.url, source])).values()].slice(0, maxSources);
     const retainedUrls = new Set(sources.map((source) => source.url));
     const combinedEvidence = [
       ...new Map(
-        [...previous.evidence, ...followUp.evidence]
+        [...followUp.evidence, ...previous.evidence]
           .filter((entry) => retainedUrls.has(entry.sourceUrl) || retainedUrls.has(entry.canonicalUrl))
           .map((entry) => [`${entry.citationId}\0${entry.text}`, entry]),
       ).values(),
@@ -950,6 +1028,7 @@ export class SearchService {
       sources,
       evidence,
       failures: [...previous.failures, ...followUp.failures].slice(-200),
+      ...(previous.partial || followUp.partial ? { partial: true } : {}),
       createdAt: previous.createdAt,
       updatedAt,
       expiresAt: new Date(this.now() + RESEARCH_JOB_TTL_MS).toISOString(),
@@ -957,6 +1036,7 @@ export class SearchService {
   }
 
   async search(options: SearchOptions): Promise<SearchResponse> {
+    validateInput(searchInput, options);
     const query = options.query?.normalize('NFKC').trim().replace(/\s+/g, ' ');
     if (!query || query.length > MAX_QUERY_CHARS) throw new TendrilError('SEARCH_FAILED', `query must contain 1-${MAX_QUERY_CHARS} characters`);
     if (options.searxngUrl && options.searxngUrl !== this.manager.config.searxngUrl) {
@@ -977,13 +1057,14 @@ export class SearchService {
       }
       const endpoint = this.manager.config.searxngUrl;
       const semantics: SearchSemantics = {
+        maxResults,
         ...(endpoint ? { endpoint } : {}),
         ...(options.language ? { language: options.language } : {}),
         ...(options.safeSearch !== undefined ? { safeSearch: options.safeSearch } : {}),
         ...(options.timeRange ? { timeRange: options.timeRange } : {}),
       };
       const attempts = await Promise.all(eligible.map((provider) => this.tryProvider(query, provider, semantics, scope.signal, scope.deadlineMs)));
-      throwIfAborted(scope.signal);
+      throwIfCancelled(scope.signal);
       const successes: ProviderSearchSuccess[] = [];
       for (const attempt of attempts) {
         if (attempt.ok) {
@@ -992,6 +1073,7 @@ export class SearchService {
         } else failures.push(attempt.failure);
       }
       if (successes.length === 0) {
+        throwIfAborted(scope.signal);
         const rateLimited = failures.find((failure) => failure.kind === 'rate_limited');
         if (rateLimited)
           return {
@@ -1025,6 +1107,7 @@ export class SearchService {
         results,
       };
       if (failures.length > 0) response.failures = failures;
+      if (failures.some((failure) => failure.kind !== 'unconfigured')) response.partial = true;
       const rateLimited = failures.find((failure) => failure.kind === 'rate_limited');
       if (rateLimited) response.rateLimit = rateLimitFromFailure(rateLimited);
       const fetchTop = Math.max(0, Math.min(options.fetchTop ?? 0, 10));
@@ -1033,6 +1116,7 @@ export class SearchService {
         const fetched = await this.fetchEvidence(sources, scope.signal, scope.deadlineMs, DEFAULT_EVIDENCE_TOTAL_CHARS);
         response.evidence = fetched.evidence;
         if (fetched.failures.length > 0) response.evidenceFailures = fetched.failures;
+        if (fetched.failures.length > 0) response.partial = true;
       }
       return response;
     } finally {
@@ -1041,6 +1125,7 @@ export class SearchService {
   }
 
   async research(options: ResearchOptions): Promise<ResearchResponse> {
+    validateInput(researchInput, options);
     const queries = [
       ...new Set(
         options.queries
@@ -1079,7 +1164,7 @@ export class SearchService {
               ),
             };
           } catch (error) {
-            throwIfAborted(scope.signal);
+            throwIfCancelled(scope.signal);
             return {
               query,
               results: [],
@@ -1088,13 +1173,15 @@ export class SearchService {
           }
         }),
       );
-      throwIfAborted(scope.signal);
+      throwIfCancelled(scope.signal);
       for (const group of searched) failures.push(...group.failures);
       const sources = allocateResearchSources(searched, Math.max(1, Math.min(options.maxSources ?? 10, 30)));
+      if (sources.length === 0) throwIfAborted(scope.signal);
       const maxEvidenceChars = Math.max(1, Math.min(options.maxEvidenceChars ?? DEFAULT_EVIDENCE_TOTAL_CHARS, MAX_EVIDENCE_TOTAL_CHARS));
       const fetched = await this.fetchEvidence(sources, scope.signal, scope.deadlineMs, maxEvidenceChars);
       failures.push(...fetched.failures);
-      return { queries, sources, evidence: fetched.evidence, failures };
+      const partial = failures.some((failure) => failure.stage === 'evidence' || failure.providerFailure?.kind !== 'unconfigured');
+      return { queries, sources, evidence: fetched.evidence, failures, ...(partial ? { partial: true } : {}) };
     } finally {
       operation.complete();
     }
@@ -1238,11 +1325,14 @@ export class SearchService {
     const circuitFailure = this.beginProviderAttempt(provider);
     if (circuitFailure) throw new ProviderFailureError(circuitFailure);
     const startedAt = this.now();
+    const scope = operationScope({ signal, deadlineMs }, PROVIDER_TIMEOUT_MS);
     try {
       const providerSemaphore = this.providerLimiters.get(provider) ?? new Semaphore(2);
       this.providerLimiters.set(provider, providerSemaphore);
-      const payload = await providerSemaphore.run(signal, () =>
-        this.providerLimiter.run(signal, () => this.searchWithProvider(query, provider, MAX_SEARCH_RESULTS, semantics, signal, deadlineMs)),
+      const payload = await providerSemaphore.run(scope.signal, () =>
+        this.providerLimiter.run(scope.signal, () =>
+          this.searchWithProvider(query, provider, semantics.maxResults ?? MAX_SEARCH_RESULTS, semantics, scope.signal, deadlineMs),
+        ),
       );
       const normalized = { results: normalizeParsedResults(payload.results, provider, query), failures: payload.failures };
       this.recordProviderSuccess(provider, Math.max(0, this.now() - startedAt));
@@ -1252,6 +1342,8 @@ export class SearchService {
       const failure = classifyProviderError(error, provider);
       this.recordProviderFailure(provider, failure, Math.max(0, this.now() - startedAt));
       throw new ProviderFailureError(failure);
+    } finally {
+      scope.cleanup();
     }
   }
 
@@ -1286,6 +1378,11 @@ export class SearchService {
   }
 
   private recordProviderFailure(provider: SearchProviderName, failure: SearchProviderFailure, latencyMs: number): void {
+    if (failure.kind === 'empty' || failure.kind === 'irrelevant') {
+      // Query-specific quality is not an outage; another query may succeed.
+      this.recordProviderSuccess(provider, latencyMs);
+      return;
+    }
     if (failure.kind === 'aborted') {
       const current = this.providerStats.get(provider);
       if (current?.halfOpen) current.halfOpen = false;
@@ -1339,38 +1436,30 @@ export class SearchService {
     deadlineMs: number,
   ): Promise<{ results: ParsedSearchResult[]; failures: SearchProviderFailure[] }> {
     throwIfAborted(signal);
-    const session = await this.manager.create();
-    try {
-      throwIfAborted(signal);
-      if (provider === 'searxng') {
-        const url = new URL(providerUrl(provider, query, semantics.endpoint));
-        if (semantics.language) url.searchParams.set('language', semantics.language);
-        if (semantics.safeSearch !== undefined) url.searchParams.set('safesearch', String(semantics.safeSearch));
-        if (semantics.timeRange) url.searchParams.set('time_range', semantics.timeRange);
-        const response = await session.fetchText(url.toString(), undefined, {
-          signal,
-          deadlineMs,
-          maxBytes: MAX_PROVIDER_BODY_BYTES,
-          accept: 'application/json',
-        });
-        this.assertProviderStatus(provider, response.status, response.headers);
-        return parseSearxngResponse(response.text);
-      }
-      if (provider === 'google') return { results: await this.searchGoogle(session, query, maxResults, signal, deadlineMs), failures: [] };
-      if (provider === 'duckduckgo') return { results: await this.searchDuckDuckGo(session, query, signal, deadlineMs), failures: [] };
-      const response = await session.fetchText(providerUrl(provider, query), undefined, {
+    if (provider === 'searxng') {
+      const url = new URL(providerUrl(provider, query, semantics.endpoint));
+      if (semantics.language) url.searchParams.set('language', semantics.language);
+      if (semantics.safeSearch !== undefined) url.searchParams.set('safesearch', String(semantics.safeSearch));
+      if (semantics.timeRange) url.searchParams.set('time_range', semantics.timeRange);
+      const response = await this.fetchText(url.toString(), {
         signal,
         deadlineMs,
         maxBytes: MAX_PROVIDER_BODY_BYTES,
-        accept: 'application/rss+xml, application/xml, text/xml',
+        accept: 'application/json',
       });
       this.assertProviderStatus(provider, response.status, response.headers);
-      return { results: parseBingRss(response.text), failures: [] };
-    } finally {
-      await this.manager
-        .close(session.id)
-        .catch((error) => this.logger.warn('Failed to close search session', { sessionId: session.id, error: String(error) }));
+      return parseSearxngResponse(response.text);
     }
+    if (provider === 'google') return this.searchGoogle(query, maxResults, semantics, signal, deadlineMs);
+    if (provider === 'duckduckgo') return { results: await this.searchDuckDuckGo(query, signal, deadlineMs), failures: [] };
+    const response = await this.fetchText(providerUrl(provider, query), {
+      signal,
+      deadlineMs,
+      maxBytes: MAX_PROVIDER_BODY_BYTES,
+      accept: 'application/rss+xml, application/xml, text/xml',
+    });
+    this.assertProviderStatus(provider, response.status, response.headers);
+    return { results: parseBingRss(response.text), failures: [] };
   }
 
   private assertProviderStatus(provider: SearchProviderName, status: number | null, headers: Record<string, string>): void {
@@ -1394,10 +1483,15 @@ export class SearchService {
     }
   }
 
-  private async searchDuckDuckGo(session: TendrilSession, query: string, signal: AbortSignal, deadlineMs: number): Promise<ParsedSearchResult[]> {
+  private async searchDuckDuckGo(query: string, signal: AbortSignal, deadlineMs: number): Promise<ParsedSearchResult[]> {
     const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     try {
-      const response = await session.fetchText(apiUrl, undefined, { signal, deadlineMs, maxBytes: MAX_PROVIDER_BODY_BYTES, accept: 'application/json' });
+      const response = await this.fetchText(apiUrl, {
+        signal,
+        deadlineMs: Math.min(deadlineMs, Date.now() + 5_000),
+        maxBytes: MAX_PROVIDER_BODY_BYTES,
+        accept: 'application/json',
+      });
       this.assertProviderStatus('duckduckgo', response.status, response.headers);
       const parsed = parseDuckDuckGoResponse(response.text);
       if (parsed.length > 0) {
@@ -1406,10 +1500,11 @@ export class SearchService {
       }
     } catch (error) {
       const failure = classifyProviderError(error, 'duckduckgo');
-      if (failure.kind === 'rate_limited' || failure.kind === 'aborted' || failure.kind === 'timeout') throw error;
+      throwIfAborted(signal);
+      if (failure.kind === 'rate_limited' || failure.kind === 'aborted') throw error;
       this.logger.warn('DuckDuckGo API failed; falling back to HTML search', { kind: failure.kind, error: failure.message });
     }
-    const response = await session.fetchText(providerUrl('duckduckgo', query), undefined, {
+    const response = await this.fetchText(providerUrl('duckduckgo', query), {
       signal,
       deadlineMs,
       maxBytes: MAX_PROVIDER_BODY_BYTES,
@@ -1420,56 +1515,67 @@ export class SearchService {
   }
 
   private async searchGoogle(
-    session: TendrilSession,
     query: string,
     maxResults: number,
+    semantics: SearchSemantics,
     signal: AbortSignal,
     deadlineMs: number,
-  ): Promise<ParsedSearchResult[]> {
+  ): Promise<{ results: ParsedSearchResult[]; failures: SearchProviderFailure[] }> {
     const key = this.manager.config.googleSearchApiKey;
     const cx = this.manager.config.googleSearchCx;
     if (!key || !cx) throw new ProviderFailureError({ provider: 'google', kind: 'unconfigured', message: 'Google search is not configured', retryable: false });
     const parsed: ParsedSearchResult[] = [];
+    const failures: SearchProviderFailure[] = [];
     while (parsed.length < maxResults) {
-      throwIfAborted(signal);
-      const count = Math.min(maxResults - parsed.length, 10);
-      const url = new URL('https://www.googleapis.com/customsearch/v1');
-      url.searchParams.set('key', key);
-      url.searchParams.set('cx', cx);
-      url.searchParams.set('q', query);
-      url.searchParams.set('num', String(count));
-      url.searchParams.set('start', String(parsed.length + 1));
-      const response = await session.fetchText(url.toString(), undefined, {
-        signal,
-        deadlineMs,
-        maxBytes: MAX_PROVIDER_BODY_BYTES,
-        accept: 'application/json',
-      });
-      this.assertProviderStatus('google', response.status, response.headers);
-      let payload: unknown;
       try {
-        payload = JSON.parse(response.text) as unknown;
-      } catch {
-        throw new ProviderFailureError({ provider: 'google', kind: 'parse', message: 'Google Custom Search API returned invalid JSON', retryable: true });
-      }
-      if (!isRecord(payload))
-        throw new ProviderFailureError({
-          provider: 'google',
-          kind: 'parse',
-          message: 'Google Custom Search API returned an invalid response',
-          retryable: true,
+        throwIfAborted(signal);
+        const count = Math.min(maxResults - parsed.length, 10);
+        const url = new URL('https://www.googleapis.com/customsearch/v1');
+        url.searchParams.set('key', key);
+        url.searchParams.set('cx', cx);
+        url.searchParams.set('q', query);
+        url.searchParams.set('num', String(count));
+        url.searchParams.set('start', String(parsed.length + 1));
+        if (semantics.language) url.searchParams.set('lr', `lang_${semantics.language.split('-')[0]}`);
+        if (semantics.safeSearch !== undefined) url.searchParams.set('safe', semantics.safeSearch === 0 ? 'off' : 'active');
+        if (semantics.timeRange) url.searchParams.set('dateRestrict', semantics.timeRange === 'day' ? 'd1' : semantics.timeRange === 'month' ? 'm1' : 'y1');
+        const response = await this.fetchText(url.toString(), {
+          signal,
+          deadlineMs,
+          maxBytes: MAX_PROVIDER_BODY_BYTES,
+          accept: 'application/json',
         });
-      if (!Array.isArray(payload.items)) break;
-      const previousLength = parsed.length;
-      for (const item of payload.items) {
-        if (!isRecord(item)) continue;
-        const title = stringField(item, 'title');
-        const itemUrl = stringField(item, 'link');
-        if (title && itemUrl) parsed.push({ title, url: itemUrl, snippet: stringField(item, 'snippet') });
+        this.assertProviderStatus('google', response.status, response.headers);
+        let payload: unknown;
+        try {
+          payload = JSON.parse(response.text) as unknown;
+        } catch {
+          throw new ProviderFailureError({ provider: 'google', kind: 'parse', message: 'Google Custom Search API returned invalid JSON', retryable: true });
+        }
+        if (!isRecord(payload))
+          throw new ProviderFailureError({
+            provider: 'google',
+            kind: 'parse',
+            message: 'Google Custom Search API returned an invalid response',
+            retryable: true,
+          });
+        if (!Array.isArray(payload.items)) break;
+        const previousLength = parsed.length;
+        for (const item of payload.items) {
+          if (!isRecord(item)) continue;
+          const title = stringField(item, 'title');
+          const itemUrl = stringField(item, 'link');
+          if (title && itemUrl) parsed.push({ title, url: itemUrl, snippet: stringField(item, 'snippet') });
+        }
+        if (parsed.length - previousLength < count) break;
+      } catch (error) {
+        throwIfCancelled(signal);
+        if (parsed.length === 0) throw error;
+        failures.push(classifyProviderError(error, 'google'));
+        break;
       }
-      if (parsed.length - previousLength < count) break;
     }
-    return parsed;
+    return { results: parsed, failures };
   }
 
   private async fetchEvidence(
@@ -1487,7 +1593,7 @@ export class SearchService {
         };
         try {
           throwIfAborted(signal);
-          session = await this.manager.create();
+          session = await this.createEvidenceSession(signal, deadlineMs);
           signal.addEventListener('abort', onAbort, { once: true });
           throwIfAborted(signal);
           const navigation = await session.navigate({ url: source.url, waitUntil: 'domcontentloaded', signal, deadlineMs });
@@ -1541,7 +1647,7 @@ export class SearchService {
           }
           return { evidence, failure: undefined };
         } catch (error) {
-          throwIfAborted(signal);
+          throwIfCancelled(signal);
           return {
             evidence: [],
             failure: {
@@ -1559,7 +1665,7 @@ export class SearchService {
       }),
     );
     const settled = await Promise.allSettled(tasks);
-    throwIfAborted(signal);
+    throwIfCancelled(signal);
     const fetched = settled.map((item, index) =>
       item.status === 'fulfilled'
         ? item.value
@@ -1597,5 +1703,19 @@ export class SearchService {
       }
     }
     return { evidence, failures };
+  }
+
+  private async createEvidenceSession(signal: AbortSignal, deadlineMs: number): Promise<TendrilSession> {
+    for (;;) {
+      throwIfAborted(signal);
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) throw new TendrilError('TIMEOUT', 'Timed out waiting for an evidence browser slot', { retryable: true });
+      try {
+        return await this.manager.create();
+      } catch (error) {
+        if (!(error instanceof TendrilError) || error.code !== 'SESSION_LIMIT_REACHED') throw error;
+        await delay(Math.min(100, remaining), undefined, { signal });
+      }
+    }
   }
 }

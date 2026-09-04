@@ -1,9 +1,9 @@
 import { copyFile, lstat, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
-import http from 'node:http';
 import path from 'node:path';
 import type { BrowserContext, Dialog, Download, Frame, JSHandle, Locator, Page, Request, Response } from 'playwright';
 import { TendrilError } from '../errors.js';
 import { EgressProxy } from '../security/egress-proxy.js';
+import { fetchTextWithPolicy } from '../security/fetch-text.js';
 import { NetworkPolicy } from '../security/network-policy.js';
 import type {
   ActivityEntry,
@@ -102,15 +102,6 @@ interface SnapshotCursorEntry {
 }
 
 type AddCookie = Parameters<BrowserContext['addCookies']>[0][number];
-
-function abortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  return new TendrilError('CANCELLED', 'Operation cancelled', { retryable: true });
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw abortError(signal);
-}
 
 function boundedTimeout(configuredMs: number, deadlineMs?: number): number {
   if (deadlineMs === undefined) return configuredMs;
@@ -700,11 +691,11 @@ export class TendrilSession {
     } else if (action === 'back') response = await page.goBack({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
     else if (action === 'forward') response = await page.goForward({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
     else response = await page.reload({ waitUntil: options.waitUntil ?? 'domcontentloaded', timeout: timeoutMs });
-    this.refs.clear();
+    await this.invalidatePageRefs(pageId);
     const contentType = response?.headers()['content-type']?.split(';', 1)[0]?.trim();
     const result: { url: string; title: string; status: number | null; mimeType?: string } = {
       url: page.url(),
-      title: await page.title(),
+      title: await page.title().catch(() => ''),
       status: response?.status() ?? null,
     };
     if (contentType) result.mimeType = contentType;
@@ -737,108 +728,16 @@ export class TendrilSession {
     options: { signal?: AbortSignal; deadlineMs?: number; maxBytes?: number; accept?: string } = {},
   ): Promise<{ status: number | null; text: string; headers: Record<string, string> }> {
     this.currentPage(pageId);
-    throwIfAborted(options.signal);
-    let target = new URL(url);
-    if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
-    const proxy = new URL(this.proxy.url());
     const requestedMaxBytes = options.maxBytes ?? this.config.maxResponseBodyBytes;
     if (!Number.isFinite(requestedMaxBytes) || requestedMaxBytes <= 0) {
       throw new TendrilError('CONFIGURATION_ERROR', 'fetchText maxBytes must be a positive finite number');
     }
-    const maxBytes = Math.max(1, Math.floor(Math.min(requestedMaxBytes, this.config.maxResponseBodyBytes)));
-    for (let redirects = 0; redirects <= 5; redirects += 1) {
-      throwIfAborted(options.signal);
-      await this.networkPolicy.resolve(target.toString());
-      throwIfAborted(options.signal);
-      const timeoutMs = boundedTimeout(this.config.navigationTimeoutMs, options.deadlineMs);
-      const result = await new Promise<{ status: number; text: string; headers: Record<string, string>; location?: string }>((resolve, reject) => {
-        let settled = false;
-        const request = http.request(
-          {
-            hostname: proxy.hostname,
-            port: proxy.port,
-            method: 'GET',
-            path: target.toString(),
-            headers: {
-              accept: options.accept ?? 'text/plain,*/*;q=0.1',
-              'accept-encoding': 'identity',
-              connection: 'close',
-              host: target.host,
-              'user-agent': 'Project-Tendril/1.0',
-            },
-          },
-          (response) => {
-            const status = response.statusCode ?? 0;
-            const location = response.headers.location;
-            const headers = Object.fromEntries(
-              Object.entries(response.headers).flatMap(([key, value]) =>
-                value === undefined ? [] : [[key, Array.isArray(value) ? value.join(', ') : String(value)]],
-              ),
-            );
-            if (location && [301, 302, 303, 307, 308].includes(status)) {
-              settled = true;
-              response.resume();
-              resolve({ status, text: '', headers, location });
-              return;
-            }
-            const rawLength = response.headers['content-length'];
-            const contentLength = Number(Array.isArray(rawLength) ? rawLength[0] : rawLength);
-            if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-              settled = true;
-              response.destroy();
-              reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
-              return;
-            }
-            const chunks: Buffer[] = [];
-            let bytes = 0;
-            response.on('data', (chunk: Buffer) => {
-              if (settled) return;
-              bytes += chunk.byteLength;
-              if (bytes > maxBytes) {
-                settled = true;
-                response.destroy();
-                reject(new TendrilError('OUTPUT_LIMIT', 'Fetched text exceeds configured response limit'));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            response.once('end', () => {
-              if (settled) return;
-              settled = true;
-              resolve({ status, text: Buffer.concat(chunks).toString('utf8'), headers });
-            });
-            response.once('error', (error) => {
-              if (settled) return;
-              settled = true;
-              reject(error);
-            });
-          },
-        );
-        const onAbort = (): void => {
-          request.destroy(abortError(options.signal!));
-        };
-        options.signal?.addEventListener('abort', onAbort, { once: true });
-        request.setTimeout(timeoutMs, () => {
-          request.destroy(new TendrilError('TIMEOUT', `Timed out fetching ${target.toString()}`, { retryable: true }));
-        });
-        request.once('error', (error) => {
-          if (settled) return;
-          settled = true;
-          options.signal?.removeEventListener('abort', onAbort);
-          reject(error);
-        });
-        request.once('close', () => options.signal?.removeEventListener('abort', onAbort));
-        request.end();
-      });
-      if (result.location) {
-        target = new URL(result.location, target);
-        if (!['http:', 'https:'].includes(target.protocol)) throw new TendrilError('NETWORK_BLOCKED', `Protocol ${target.protocol} is not allowed`);
-        continue;
-      }
-      this.refs.clear();
-      return { status: result.status, text: result.text, headers: result.headers };
-    }
-    throw new TendrilError('TIMEOUT', `Too many redirects fetching ${url}`, { retryable: true });
+    return fetchTextWithPolicy(this.networkPolicy, url, {
+      ...options,
+      timeoutMs: this.config.navigationTimeoutMs,
+      maxBytes: Math.min(requestedMaxBytes, this.config.maxResponseBodyBytes),
+      proxyUrl: this.proxy.url(),
+    });
   }
 
   async snapshot(

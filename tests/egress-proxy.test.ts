@@ -3,10 +3,56 @@ import type { AddressInfo } from 'node:net';
 import net from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { EgressProxy } from '../src/security/egress-proxy.js';
+import { fetchTextWithPolicy } from '../src/security/fetch-text.js';
 import { NetworkPolicy } from '../src/security/network-policy.js';
 import { Logger } from '../src/util.js';
 
 describe('EgressProxy lifecycle', () => {
+  it('propagates truncated upstream responses without unhandled stream errors', async () => {
+    const source = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': '100' });
+      res.write('truncated');
+      setImmediate(() => res.destroy());
+    });
+    await new Promise<void>((resolve) => source.listen(0, '127.0.0.1', resolve));
+    const policy = new NetworkPolicy({ blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] });
+    const proxy = new EgressProxy(policy, new Logger('error'));
+    await proxy.start();
+    try {
+      await expect(
+        fetchTextWithPolicy(policy, `http://127.0.0.1:${(source.address() as AddressInfo).port}/`, { proxyUrl: proxy.url() }),
+      ).rejects.toBeInstanceOf(Error);
+    } finally {
+      await proxy.stop();
+      source.closeAllConnections();
+      await new Promise<void>((resolve) => source.close(() => resolve()));
+    }
+  });
+
+  it('cancels DNS when an HTTP client disconnects before resolution completes', async () => {
+    const cancel = vi.fn();
+    const resolve4 = vi.fn(() => new Promise<string[]>(() => {}));
+    const policy = new NetworkPolicy(
+      { blockPrivateNetworks: false, allowedHosts: [], blockedHosts: [] },
+      {
+        createResolver: () => ({ resolve4, resolve6: () => new Promise<string[]>(() => {}), cancel }),
+        lookupTimeoutMs: 10_000,
+      },
+    );
+    const proxy = new EgressProxy(policy, new Logger('error'));
+    const port = await proxy.start();
+    try {
+      const request = http.request({ hostname: '127.0.0.1', port, path: 'http://slow.invalid/' });
+      request.on('error', () => undefined);
+      request.end();
+      await vi.waitFor(() => expect(resolve4).toHaveBeenCalledOnce());
+      request.destroy();
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    } finally {
+      await proxy.stop();
+    }
+  });
+
   async function connectResponse(port: number, authority: string): Promise<string> {
     const client = net.connect(port, '127.0.0.1');
     client.on('error', () => undefined);

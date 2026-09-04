@@ -14,6 +14,39 @@ afterEach(async () => {
 });
 
 describe('TendrilSession', () => {
+  it('keeps page refs valid across text fetches and navigation in a different tab', async () => {
+    const fixture = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<title>Second</title><p>Fetched text</p>');
+    });
+    await new Promise<void>((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+    const address = fixture.address();
+    if (!address || typeof address === 'string') throw new Error('Fixture did not bind');
+    const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-ref-fetch-'));
+    try {
+      runtime = await createRuntime(
+        await loadConfig({ overrides: { dataDir: path.join(root, 'data'), runtimeDir: path.join(root, 'run'), logLevel: 'error' } }),
+      );
+      const session = await runtime.manager.create({ allowPrivateNetwork: true });
+      await session.setContent('<label>Name <input id="name"></label>');
+      const first = (await session.listPages())[0]!;
+      const snapshot = await session.snapshot({ mode: 'interactive' });
+      const ref = snapshot.content.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+      expect(ref).toBeTruthy();
+      await session.fetchText(`http://127.0.0.1:${address.port}/text`);
+      await session.act({ action: 'fill', ref, text: 'After fetch' });
+      const next = await session.snapshot({ mode: 'interactive', pageId: first.id });
+      const nextRef = next.content.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+      const second = await session.openPage();
+      await session.navigate({ pageId: second.id, url: `http://127.0.0.1:${address.port}/second` });
+      await session.act({ action: 'fill', ref: nextRef, text: 'After other navigation' });
+      expect(await session.evaluate('document.querySelector("#name").value', first.id)).toBe('After other navigation');
+    } finally {
+      fixture.closeAllConnections();
+      await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    }
+  });
+
   it('flushes a named-profile cookie before close and restores it after reopening', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tendril-profile-reopen-'));
     runtime = await createRuntime(

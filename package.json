@@ -1,6 +1,6 @@
 {
   "name": "project-tendril",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "description": "A local-first Obscura browser and web-research runtime for AI agents",
   "keywords": [
     "ai-agents",
@@ -61,6 +61,8 @@
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js serve",
     "test": "vitest run",
+    "test:search": "vitest run tests/search.test.ts tests/search-integration.test.ts tests/fetch-text.test.ts tests/errors.test.ts",
+    "test:search:live": "vitest run tests/search-live.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:package": "node scripts/test-package.mjs",
     "test:watch": "vitest",

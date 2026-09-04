@@ -80,10 +80,16 @@ export class EgressProxy {
 
   private async handleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const rawUrl = request.url ?? '';
+    const disconnected = new AbortController();
+    const onDisconnect = (): void => disconnected.abort();
+    request.once('aborted', onDisconnect);
+    response.once('close', onDisconnect);
+    response.on('error', () => undefined);
     try {
       if (this.stopping) throw new Error('Egress proxy is stopping');
       const url = new URL(rawUrl);
-      const destination = await this.policy.resolve(url.toString(), this.closingController.signal);
+      const destination = await this.policy.resolve(url.toString(), AbortSignal.any([this.closingController.signal, disconnected.signal]));
+      if (disconnected.signal.aborted) return;
       if (this.stopping) throw new Error('Egress proxy is stopping');
       const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !HOP_HEADERS.has(key.toLowerCase())));
       headers.host = url.host;
@@ -101,14 +107,18 @@ export class EgressProxy {
           agent: url.protocol === 'https:' ? this.httpsAgent : this.httpAgent,
         },
         (upstreamResponse) => {
+          upstreamResponse.once('error', (error) => response.destroy(error));
           response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.statusMessage, upstreamResponse.headers);
           upstreamResponse.pipe(response);
         },
       );
       upstream.on('error', (error) => {
         this.logger.warn('Proxy upstream request failed', { url: redactUrl(rawUrl), error: error.message });
-        if (!response.headersSent) response.writeHead(502, { 'content-type': 'text/plain' });
-        response.end('Bad Gateway');
+        if (response.headersSent) response.destroy(error);
+        else if (!response.destroyed) {
+          response.writeHead(502, { 'content-type': 'text/plain' });
+          response.end('Bad Gateway');
+        }
       });
       upstream.once('socket', (socket) => this.trackUpstream(socket));
       request.once('aborted', () => upstream.destroy());
@@ -123,6 +133,9 @@ export class EgressProxy {
         response.writeHead(403, { 'content-type': 'text/plain', 'x-tendril-blocked': 'true' });
         response.end(`Blocked by Tendril network policy: ${message}`);
       }
+    } finally {
+      request.removeListener('aborted', onDisconnect);
+      response.removeListener('close', onDisconnect);
     }
   }
 

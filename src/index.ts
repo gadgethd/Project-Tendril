@@ -3,6 +3,15 @@ export { launchBrowser } from './browser/backend.js';
 export { findObscura } from './browser/obscura.js';
 export { BrowserManager, type SessionLease } from './browser/manager.js';
 export { SearchService } from './browser/search.js';
+export type {
+  SearchOptions,
+  SearchResponse,
+  ResearchOptions,
+  ResearchResponse,
+  ResearchJob,
+  SearchProviderFailure,
+  ResearchFailure,
+} from './browser/search.js';
 export { TendrilSession } from './browser/session.js';
 export { DEFAULT_CONFIG, loadConfig } from './config.js';
 export type { DoctorCheck } from './doctor.js';
