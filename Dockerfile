@@ -32,7 +32,7 @@ LABEL org.opencontainers.image.title="Project Tendril" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="Apache-2.0"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends dumb-init ca-certificates libgcc-s1 \
+    && apt-get install -y --no-install-recommends dumb-init ca-certificates libgcc-s1 libpcre2-8-0 \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system tendril && useradd --system --gid tendril --create-home tendril
 RUN mkdir -p /data /tmp/tendril && chown -R tendril:tendril /data /tmp/tendril
