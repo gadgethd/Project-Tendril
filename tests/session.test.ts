@@ -60,7 +60,10 @@ describe('TendrilSession', () => {
       }),
     );
     const first = await runtime.manager.create({ profile: 'cookie-reopen' });
-    await first.importCookies([{ name: 'persisted', value: 'yes', url: 'https://example.test/' }]);
+    // Session cookies may be discarded on a clean browser shutdown. Give this
+    // disk-persistence fixture a lifetime that spans both browser processes.
+    const expires = Math.floor(Date.now() / 1000) + 86_400;
+    await first.importCookies([{ name: 'persisted', value: 'yes', url: 'https://example.test/', expires }]);
     await runtime.manager.close(first.id);
 
     const reopened = await runtime.manager.create({ profile: 'cookie-reopen' });
