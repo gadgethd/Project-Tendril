@@ -404,7 +404,9 @@ export function captureWindowsProcessTree(rootPid: number, processes: WindowsPro
     for (const record of childrenByParent.get(parentPid) ?? []) {
       if (discovered.has(record.pid)) continue;
       if (creationTimes.get(record.pid)! < parentCreationTime) {
-        throw new Error(`Windows process ${record.pid} predates its reported parent ${parentPid}`);
+        // An orphan can retain a parent PID that Windows has since reused.
+        // It is not a descendant of this parent identity.
+        continue;
       }
       discovered.add(record.pid);
       descendants.push(record);
@@ -459,7 +461,8 @@ export function captureExitedWindowsProcessTree(
       const childCreationTime = windowsCreationTime(child);
       if (childCreationTime > exitedAt) continue;
       if (childCreationTime < parentCreationTime) {
-        throw new Error(`Windows process ${child.pid} predates its reported parent ${parent.pid}`);
+        // Stale parent PIDs do not establish ancestry after PID reuse.
+        continue;
       }
       const childKey = windowsProcessKey(child);
       if (!descendants.has(childKey)) descendants.set(childKey, child);
@@ -661,7 +664,11 @@ export async function terminateProcessTree(child: ChildProcess, options: Process
 
   if (platform === 'win32') {
     if (childHasExited(child) && options.windowsExitCleanup) {
-      await withTimeout(options.windowsExitCleanup(options.cleanupDeadline), forceTimeoutMs(), 'Windows Chromium child-exit cleanup');
+      await withTimeout(
+        options.windowsExitCleanup(options.cleanupDeadline),
+        boundedCleanupTimeout(options, (options.gracefulTimeoutMs ?? 3_000) + 3 * (options.forceTimeoutMs ?? 3_000), 'Windows child-exit cleanup'),
+        'Windows Chromium child-exit cleanup',
+      );
       return;
     }
     if (!options.windowsRootIdentity) {
@@ -783,7 +790,7 @@ export async function closeChromiumResources(
       }
       await withTimeout(
         scopedOptions.windowsExitCleanup(cleanupDeadline),
-        stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
+        stageTimeout(cleanupDeadline - Date.now(), 'Windows child-exit cleanup'),
         'Windows Chromium child-exit cleanup',
       );
       return;
@@ -819,7 +826,7 @@ export async function closeChromiumResources(
       if (scopedOptions.windowsExitCleanup) {
         await withTimeout(
           scopedOptions.windowsExitCleanup(cleanupDeadline),
-          stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
+          stageTimeout(cleanupDeadline - Date.now(), 'Windows child-exit cleanup'),
           'Windows Chromium child-exit cleanup',
         ).catch(() => undefined);
         scopedOptions.windowsExitCleanup?.markVerified();
@@ -861,7 +868,7 @@ export async function closeChromiumResources(
     if (childHasExited(child) && scopedOptions.windowsExitCleanup) {
       await withTimeout(
         scopedOptions.windowsExitCleanup(cleanupDeadline),
-        stageTimeout(forceTimeoutMs, 'Windows child-exit cleanup'),
+        stageTimeout(cleanupDeadline - Date.now(), 'Windows child-exit cleanup'),
         'Windows Chromium child-exit cleanup',
       );
       return;

@@ -88,12 +88,12 @@ describe('runtime resource cleanup', () => {
         { pid: rootPid, parentPid: 2, creationDate: createdAt(1) },
       ]),
     ).toThrow('duplicate PID');
-    expect(() =>
+    expect(
       captureWindowsProcessTree(rootPid, [
         { pid: rootPid, parentPid: 1, creationDate: createdAt(10) },
         { pid: rootPid + 1, parentPid: rootPid, creationDate: createdAt(5) },
       ]),
-    ).toThrow('predates its reported parent');
+    ).toMatchObject({ descendants: [] });
   });
 
   it('uses verified platform-specific process-tree termination strategies', async () => {
@@ -249,7 +249,7 @@ describe('runtime resource cleanup', () => {
     expect(taskkill).toHaveBeenCalledOnce();
     expect(taskkill).not.toHaveBeenCalledWith(901);
 
-    expect(() =>
+    expect(
       captureExitedWindowsProcessTree(
         launchSnapshot,
         [
@@ -258,7 +258,34 @@ describe('runtime resource cleanup', () => {
         ],
         Date.now(),
       ),
-    ).toThrow('predates its reported parent');
+    ).toMatchObject({ descendants: launchSnapshot.descendants });
+  });
+
+  it('joins Windows child-exit cleanup through its grace period within the shutdown deadline', async () => {
+    const child = fakeChild(941);
+    const root = { pid: 941, parentPid: 1, creationDate: createdAt(0) };
+    const descendant = { pid: 942, parentPid: 941, creationDate: createdAt(1) };
+    let enumerations = 0;
+    const taskkill = vi.fn(async () => undefined);
+    const cleanup = trackWindowsProcessTree(child, Promise.resolve({ root, descendants: [descendant] }), {
+      gracefulTimeoutMs: 80,
+      forceTimeoutMs: 30,
+      windowsProcessList: async () => (++enumerations === 1 ? [descendant] : []),
+      taskkill,
+    });
+    Object.assign(child, { exitCode: 0 });
+    child.emit('exit', 0, null);
+    await expect(
+      closeChromiumResources({ close: async () => undefined }, child, {
+        platform: 'win32',
+        windowsRootIdentity: root,
+        windowsExitCleanup: cleanup,
+        forceTimeoutMs: 30,
+        shutdownTimeoutMs: 500,
+      }),
+    ).resolves.toBeUndefined();
+    expect(enumerations).toBe(2);
+    expect(taskkill).not.toHaveBeenCalled();
   });
 
   it('never captures or taskkills children of a reused Windows root PID', async () => {
