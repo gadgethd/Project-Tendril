@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the runtime image PCRE2 package to include Debian security fixes and serialize Windows browser test files to prevent process-enumeration contention.
+
 - Fix Windows Chromium cleanup after parent PID reuse and allow child-exit verification to use the remaining bounded shutdown budget.
 
 ## 1.3.0 - 2026-09-04
