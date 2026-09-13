@@ -9,6 +9,9 @@ export default defineConfig({
     testTimeout: 45_000,
     hookTimeout: 45_000,
     sequence: { concurrent: false },
+    // Each browser test file launches Chromium and PowerShell process probes.
+    // Serialize files on Windows so runner contention cannot exhaust cleanup deadlines.
+    fileParallelism: process.platform !== 'win32',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],
