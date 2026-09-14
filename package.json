@@ -90,10 +90,10 @@
     "zod": "^4.6.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.12",
+    "@biomejs/biome": "2.5.13",
     "@types/express": "^5.0.3",
     "@types/http-proxy": "^1.17.16",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.5.1",
     "@types/turndown": "^5.0.5",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "5.0.0",
