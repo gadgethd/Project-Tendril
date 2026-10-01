@@ -94,7 +94,9 @@ jobs:
           subject-path: project-tendril-*.tgz
 
       - name: Attest package SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        env:
+          NODE_OPTIONS: '--max-http-header-size=32768'
         with:
           subject-path: project-tendril-*.tgz
           sbom-path: project-tendril-sbom.cdx.json
