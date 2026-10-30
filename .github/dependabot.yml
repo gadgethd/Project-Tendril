@@ -20,6 +20,13 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    groups:
+      # github/codeql-action/init and github/codeql-action/analyze are separate
+      # "packages" for Dependabot but must run at the same version: init writes
+      # a config file that analyze is required to understand. Ungrouped bumps
+      # produce half-upgrades that always fail the analyze job.
+      codeql-action:
+        patterns: ["github/codeql-action*"]
 
   - package-ecosystem: docker
     directory: /
